@@ -42,7 +42,7 @@ describe('SNMPTemplateList', () => {
         });
       }
 
-      if (url === '/snmp/dashboard' && method === 'GET') {
+      if (url.startsWith('/snmp/dashboard') && method === 'GET') {
         return makeJsonResponse({
           data: {
             templateUsage: [
@@ -89,7 +89,7 @@ describe('SNMPTemplateList', () => {
         return makeJsonResponse({ data: templates });
       }
 
-      if (url === '/snmp/dashboard' && method === 'GET') {
+      if (url.startsWith('/snmp/dashboard') && method === 'GET') {
         return makeJsonResponse({ data: { templateUsage: [] } });
       }
 

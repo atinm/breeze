@@ -62,6 +62,7 @@ var allCommandTypes = []string{
 
 	// handlers_backup_forward.go init() — backup commands forwarded to breeze-backup via IPC
 	tools.CmdBackupRun, tools.CmdBackupList, tools.CmdBackupStop, tools.CmdBackupRestore,
+	tools.CmdBackupVerify, tools.CmdBackupTestRestore, tools.CmdBackupCleanup,
 
 	// handlers_backup_verify_forward.go init()
 	tools.CmdBackupVerify, tools.CmdBackupTestRestore, tools.CmdBackupCleanup,
