@@ -21,6 +21,7 @@ import { automationRoutes, automationWebhookRoutes } from './routes/automations'
 import { alertRoutes } from './routes/alerts';
 import { alertTemplateRoutes } from './routes/alertTemplates';
 import { orgRoutes } from './routes/orgs';
+import { partnersRoutes } from './routes/partners';
 import { userRoutes } from './routes/users';
 import { roleRoutes } from './routes/roles';
 import { auditLogRoutes } from './routes/auditLogs';
@@ -631,6 +632,7 @@ api.route('/automations', automationRoutes);
 api.route('/alerts', alertRoutes);
 api.route('/alert-templates', alertTemplateRoutes);
 api.route('/orgs', orgRoutes);
+api.route('/partners', partnersRoutes);
 api.route('/users', userRoutes);
 api.route('/roles', roleRoutes);
 api.route('/audit-logs', auditLogRoutes);

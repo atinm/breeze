@@ -89,7 +89,7 @@ export default function AssignmentsTab({ policyId, orgId }: Props) {
       site: `/orgs/sites?orgId=${orgId}&limit=200`,
       device_group: `/device-groups?orgId=${orgId}&limit=200`,
       device: '/devices?limit=200',
-      partner: '/orgs/partners?limit=200',
+      partner: '/partners?limit=200',
     };
     try {
       const url = endpointMap[level];

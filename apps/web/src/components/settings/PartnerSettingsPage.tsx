@@ -20,6 +20,7 @@ import PartnerEventLogsTab from './PartnerEventLogsTab';
 import PartnerDefaultsTab from './PartnerDefaultsTab';
 import PartnerBrandingTab from './PartnerBrandingTab';
 import PartnerAiBudgetsTab from './PartnerAiBudgetsTab';
+import PartnerAiProvidersTab from './PartnerAiProvidersTab';
 import { showToast } from '../shared/Toast';
 import type {
   PartnerSettings,
@@ -36,7 +37,7 @@ import type {
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
 
-type TabKey = 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets';
+type TabKey = 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'aiProviders';
 
 type Partner = {
   id: string;
@@ -56,6 +57,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'defaults', label: 'Defaults' },
   { key: 'branding', label: 'Branding' },
   { key: 'aiBudgets', label: 'AI Budgets' },
+  { key: 'aiProviders', label: 'AI Providers' },
 ];
 
 const TIMEZONES = [
@@ -120,7 +122,7 @@ export default function PartnerSettingsPage() {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/orgs/partners/me');
+      const response = await fetchWithAuth('/partners/me');
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         if (response.status === 403) { setError('You do not have permission to view partner settings'); return; }
@@ -188,7 +190,7 @@ export default function PartnerSettingsPage() {
       settings.branding = brandingData;
       settings.aiBudgets = aiBudgetsData;
 
-      const response = await fetchWithAuth('/orgs/partners/me', {
+      const response = await fetchWithAuth('/partners/me', {
         method: 'PATCH',
         body: JSON.stringify({ settings })
       });
@@ -479,6 +481,12 @@ export default function PartnerSettingsPage() {
       {activeTab === 'aiBudgets' && (
         <section className="rounded-lg border bg-card p-6 shadow-sm">
           <PartnerAiBudgetsTab data={aiBudgetsData} onChange={setAiBudgetsData} />
+        </section>
+      )}
+
+      {activeTab === 'aiProviders' && currentPartnerId && (
+        <section className="rounded-lg border bg-card p-6 shadow-sm">
+          <PartnerAiProvidersTab partnerId={currentPartnerId} />
         </section>
       )}
     </div>

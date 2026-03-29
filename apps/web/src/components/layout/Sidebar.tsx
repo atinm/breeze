@@ -37,6 +37,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
+import { useAuthStore } from '../../stores/auth';
+import { isSystemScopeToken } from '../../lib/authScope';
 
 interface SidebarProps {
   currentPath?: string;
@@ -70,7 +72,12 @@ if (typeof window !== 'undefined') {
 // ---------------------------------------------------------------------------
 // Nav item type
 // ---------------------------------------------------------------------------
-type NavItem = { name: string; href: string; icon: React.ComponentType<{ className?: string }> };
+type NavItem = {
+  name: string;
+  href: string;
+  icon: React.ComponentType<{ className?: string }>;
+  systemOnly?: boolean;
+};
 
 // ---------------------------------------------------------------------------
 // Top-level items (always visible, 6-8 max)
@@ -156,6 +163,7 @@ const navSections: NavSection[] = [
       { name: 'Users', href: '/settings/users', icon: Users },
       { name: 'Roles', href: '/settings/roles', icon: KeyRound },
       { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
+      { name: 'Admin Partners', href: '/admin/partners', icon: ShieldCheck, systemOnly: true },
     ],
   },
 ];
@@ -185,14 +193,6 @@ function saveExpandedSections(state: Record<string, boolean>) {
   try { localStorage.setItem('sidebar-sections', JSON.stringify(state)); } catch { /* Storage unavailable */ }
 }
 
-// ---------------------------------------------------------------------------
-// Collect all nav items for active-href matching
-// ---------------------------------------------------------------------------
-const allNavItems: NavItem[] = [
-  ...topLevelNav,
-  ...navSections.flatMap((s) => s.items),
-];
-
 // Path aliases (highlight a different nav item for certain paths)
 const pathAliases: Record<string, string> = {
   '/software-policies': '/software-inventory',
@@ -212,6 +212,8 @@ function sectionForHref(href: string): string | null {
 // Component
 // ---------------------------------------------------------------------------
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const isSystemAdmin = isSystemScopeToken(accessToken);
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
@@ -277,12 +279,29 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
   // --- Derived state -------------------------------------------------------
   const showLabels = effectiveMode === 'open' || (effectiveMode === 'hover' && hovered);
   const isNarrow = effectiveMode !== 'open';
+  const visibleNavSections = useMemo(
+    () =>
+      navSections
+        .map((section) => ({
+          ...section,
+          items: section.items.filter((item) => !item.systemOnly || isSystemAdmin),
+        }))
+        .filter((section) => section.items.length > 0),
+    [isSystemAdmin],
+  );
+  const visibleAllNavItems = useMemo(
+    () => [
+      ...topLevelNav,
+      ...visibleNavSections.flatMap((section) => section.items),
+    ],
+    [visibleNavSections],
+  );
 
   // Find the best matching active href
   const resolvedPath = pathAliases[currentPath] ?? currentPath;
   const activeHref = useMemo(() => {
     let best: string | null = null;
-    for (const item of allNavItems) {
+    for (const item of visibleAllNavItems) {
       const matches = item.href === '/'
         ? resolvedPath === '/'
         : resolvedPath === item.href || resolvedPath.startsWith(item.href + '/');
@@ -291,7 +310,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       }
     }
     return best;
-  }, [resolvedPath]);
+  }, [resolvedPath, visibleAllNavItems]);
 
   // Auto-expand: the section containing the active page should be expanded
   const activeSectionId = activeHref ? sectionForHref(activeHref) : null;
@@ -431,7 +450,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
       <nav data-tour="sidebar-nav" className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2" style={{ scrollbarGutter: 'stable' }}>
         {topLevelNav.map((item) => renderNavItem(item))}
-        {navSections.map((section) => renderCollapsibleSection(section))}
+        {visibleNavSections.map((section) => renderCollapsibleSection(section))}
       </nav>
     </aside>
   );
@@ -461,7 +480,7 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
 
         <nav className="sidebar-nav flex-1 min-h-0 space-y-1 overflow-y-auto p-2">
           {topLevelNav.map((item) => renderNavItem(item, true))}
-          {navSections.map((section) => renderCollapsibleSection(section, true))}
+          {visibleNavSections.map((section) => renderCollapsibleSection(section, true))}
         </nav>
       </aside>
     </>

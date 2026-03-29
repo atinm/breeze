@@ -69,7 +69,7 @@ Partners are assigned a plan that determines their feature access and limits:
 Partners are created via the API:
 
 ```bash
-POST /api/v1/orgs/partners
+POST /api/v1/partners
 Content-Type: application/json
 Authorization: Bearer <token>
 
@@ -1684,8 +1684,8 @@ Content-Type: application/json
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/orgs/partners` | GET/POST | List/create partners |
-| `/api/v1/orgs/partners/:id` | GET/PATCH/DELETE | Manage partner |
+| `/api/v1/partners` | GET/POST | List/create partners |
+| `/api/v1/partners/:id` | GET/PATCH/DELETE | Manage partner |
 | `/api/v1/orgs/organizations` | GET/POST | List/create organizations |
 | `/api/v1/orgs/organizations/:id` | GET/PATCH/DELETE | Manage organization |
 | `/api/v1/orgs/sites` | GET/POST | List/create sites |

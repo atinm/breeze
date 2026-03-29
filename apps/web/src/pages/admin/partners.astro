@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+import PartnerAdminPage from '../../components/admin/PartnerAdminPage';
+---
+
+<DashboardLayout title="Admin Partners">
+  <Breadcrumbs client:load items={[
+    { label: 'Admin' },
+    { label: 'Partners' }
+  ]} />
+  <PartnerAdminPage client:load />
+</DashboardLayout>

@@ -71,7 +71,7 @@ describe('org store', () => {
     expect(getCurrentOrganization()?.id).toBe('org-1');
   });
 
-  it('fetchPartners uses orgs route and auto-selects first partner', async () => {
+  it('fetchPartners uses partners route and auto-selects first partner', async () => {
     fetchWithAuthMock
       .mockResolvedValueOnce(
         makeResponse({
@@ -88,7 +88,7 @@ describe('org store', () => {
     await useOrgStore.getState().fetchPartners();
     await flushAsync();
 
-    expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/partners');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/partners');
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/orgs/organizations?partnerId=partner-1');
     expect(useOrgStore.getState().currentPartnerId).toBe('partner-1');
     expect(useOrgStore.getState().partners).toHaveLength(1);

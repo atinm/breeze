@@ -89,7 +89,7 @@ export const useOrgStore = create<OrgState>()(
       fetchPartners: async () => {
         set({ isLoading: true, error: null });
         try {
-          const response = await fetchWithAuth('/orgs/partners');
+          const response = await fetchWithAuth('/partners');
           if (!response.ok) {
             throw new Error('Failed to fetch partners');
           }
