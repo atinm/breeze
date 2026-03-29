@@ -74,6 +74,7 @@ scriptAiRoutes.post(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
+      if (message.includes('provider') || message.includes('Model') || message.includes('model')) return c.json({ error: message }, 400);
       captureException(err, c);
       return c.json({ error: message }, 500);
     }
@@ -143,10 +144,17 @@ scriptAiRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const sessionId = c.req.param('id')!;
-    const { content, editorContext } = c.req.valid('json');
+    const { content, editorContext, provider: requestedProvider, providerModel: requestedProviderModel } = c.req.valid('json');
 
     // Run pre-flight checks (rate limits, budget, session status)
-    const preflight = await runPreFlightChecks(sessionId, content, auth, undefined, c);
+    const preflight = await runPreFlightChecks(
+      sessionId,
+      content,
+      auth,
+      undefined,
+      { provider: requestedProvider, providerModel: requestedProviderModel },
+      c,
+    );
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'Session not found') return c.json({ error: err }, 404);
@@ -161,7 +169,7 @@ scriptAiRoutes.post(
       return c.json({ error: 'Session not found' }, 404);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, provider, providerModel } = preflight;
 
     // Now safe to update editor context
     let updatedSystemPrompt: string | undefined;
@@ -180,6 +188,8 @@ scriptAiRoutes.post(
       sessionId,
       {
         orgId: dbSession.orgId,
+        provider,
+        providerModel,
         sdkSessionId: dbSession.sdkSessionId,
         model: dbSession.model,
         maxTurns: dbSession.maxTurns,

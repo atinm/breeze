@@ -54,7 +54,12 @@ systemRoutes.get('/config-status', async (c) => {
     },
     integrations: {
       sms: !!env.TWILIO_ACCOUNT_SID,
-      ai: !!env.ANTHROPIC_API_KEY || !!env.OPENAI_API_KEY,
+      ai:
+        !!env.ANTHROPIC_API_KEY ||
+        !!env.OPENAI_API_KEY ||
+        !!env.GEMINI_API_KEY ||
+        !!env.COPILOT_MODEL ||
+        !!env.LOCAL_LLM_BASE_URL,
       mtls: !!env.CLOUDFLARE_API_TOKEN && !!env.CLOUDFLARE_ZONE_ID,
       storage: !!env.S3_BUCKET || !!env.STORAGE_PROVIDER,
       sentry: !!env.SENTRY_DSN

@@ -13,7 +13,7 @@ import { db, withSystemDbAccessContext } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, aiActionPlans, devices, deviceSessions } from '../db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiProviderId } from '@breeze/shared/types/ai';
 import { checkGuardrails, checkToolPermission, checkToolRateLimit } from './aiGuardrails';
 import { checkBudget, checkAiRateLimit, getRemainingBudgetUsd } from './aiCostTracker';
 import { sanitizeUserMessage, sanitizePageContext } from './aiInputSanitizer';
@@ -21,6 +21,7 @@ import { getSession, buildSystemPrompt, waitForApproval } from './aiAgent';
 import { TOOL_TIERS, type PreToolUseCallback, type PostToolUseCallback } from './aiAgentSdkTools';
 import { writeAuditEvent, requestLikeFromSnapshot, type RequestLike } from './auditEvents';
 import type { ActiveSession, AuditSnapshot } from './streamingSessionManager';
+import { resolveSessionProvider, type ProviderRequest } from './aiProviderConfig';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2 hours
@@ -36,6 +37,8 @@ export type PreFlightResult = {
   sanitizedContent: string;
   systemPrompt: string;
   maxBudgetUsd: number | undefined;
+  provider: AiProviderId;
+  providerModel: string;
 } | {
   ok: false;
   error: string;
@@ -50,8 +53,17 @@ export async function runPreFlightChecks(
   content: string,
   auth: AuthContext,
   pageContext?: AiPageContext,
+  providerRequestOrContext?: ProviderRequest | RequestLike,
   requestContext?: RequestLike,
 ): Promise<PreFlightResult> {
+  const hasReq = (value: unknown): value is RequestLike => {
+    if (!value || typeof value !== 'object') return false;
+    return !('provider' in value) && !('providerModel' in value) && !('model' in value);
+  };
+
+  const providerRequest = hasReq(providerRequestOrContext) ? undefined : providerRequestOrContext;
+  const effectiveRequestContext = hasReq(providerRequestOrContext) ? providerRequestOrContext : requestContext;
+
   const session = await getSession(sessionId, auth);
   if (!session) {
     return { ok: false, error: 'Session not found' };
@@ -107,8 +119,8 @@ export async function runPreFlightChecks(
   const { sanitized: sanitizedContent, flags: sanitizeFlags } = sanitizeUserMessage(content);
   if (sanitizeFlags.length > 0) {
     console.warn('[AI-SDK] Input sanitization flags:', sanitizeFlags, 'session:', sessionId);
-    if (requestContext) {
-      writeAuditEvent(requestContext, {
+    if (effectiveRequestContext) {
+      writeAuditEvent(effectiveRequestContext, {
         orgId,
         action: 'ai.security.prompt_injection_detected',
         resourceType: 'ai_session',
@@ -133,8 +145,8 @@ export async function runPreFlightChecks(
   } catch (err) {
     console.error('[AI-SDK] Failed to sanitize page context:', err);
     sanitizedPageContext = undefined;
-    if (requestContext) {
-      writeAuditEvent(requestContext, {
+    if (effectiveRequestContext) {
+      writeAuditEvent(effectiveRequestContext, {
         orgId,
         action: 'ai.security.page_context_sanitization_failed',
         resourceType: 'ai_session',
@@ -161,7 +173,22 @@ export async function runPreFlightChecks(
     return { ok: false, error: 'Unable to verify spending budget. Please try again later.' };
   }
 
-  return { ok: true, session, sanitizedContent, systemPrompt, maxBudgetUsd };
+  let providerSelection: { provider: AiProviderId; providerModel: string };
+  try {
+    providerSelection = await resolveSessionProvider(session.orgId, session, providerRequest);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Invalid provider selection' };
+  }
+
+  return {
+    ok: true,
+    session,
+    sanitizedContent,
+    systemPrompt,
+    maxBudgetUsd,
+    provider: providerSelection.provider,
+    providerModel: providerSelection.providerModel,
+  };
 }
 
 // ============================================

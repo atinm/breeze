@@ -3,6 +3,7 @@
 // ============================================
 
 export type AiApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
+export type AiProviderId = 'claude' | 'openai' | 'gemini' | 'copilot' | 'local';
 
 export interface ActionPlanStep {
   toolName: string;
@@ -33,6 +34,8 @@ export interface AiSession {
   userId: string;
   status: AiSessionStatus;
   title: string | null;
+  provider?: AiProviderId;
+  providerModel?: string;
   model: string;
   contextSnapshot: AiPageContext | null;
   totalInputTokens: number;
@@ -124,6 +127,8 @@ export type AiStreamEvent =
 
 export interface CreateAiSessionRequest {
   pageContext?: AiPageContext;
+  provider?: AiProviderId;
+  providerModel?: string;
   model?: string;
   title?: string;
 }
@@ -131,6 +136,8 @@ export interface CreateAiSessionRequest {
 export interface SendAiMessageRequest {
   content: string;
   pageContext?: AiPageContext;
+  provider?: AiProviderId;
+  providerModel?: string;
 }
 
 export interface ApproveToolRequest {

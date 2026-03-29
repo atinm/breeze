@@ -295,6 +295,8 @@ helperRoutes.post(
         orgId: device.orgId,
         userId: null,
         deviceId: device.id,
+        provider: 'claude',
+        providerModel: 'claude-sonnet-4-5-20250929',
         model: 'claude-sonnet-4-5-20250929',
         systemPrompt,
         contextSnapshot: {
@@ -344,6 +346,8 @@ helperRoutes.post(
       sessionId,
       {
         orgId: dbSession.orgId,
+        provider: (dbSession.provider as 'claude' | 'openai' | 'gemini' | 'copilot' | 'local') ?? 'claude',
+        providerModel: dbSession.providerModel ?? dbSession.model,
         sdkSessionId: dbSession.sdkSessionId,
         model: dbSession.model,
         maxTurns: dbSession.maxTurns,

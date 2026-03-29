@@ -11,6 +11,7 @@ import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
+import type { AiProviderId } from '@breeze/shared/types/ai';
 
 // Cost per million tokens (in cents)
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
@@ -25,6 +26,55 @@ export function calculateCostCents(model: string, inputTokens: number, outputTok
   const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
   const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
   return Math.round((inputCost + outputCost) * 100) / 100;
+}
+
+function parseEnvCents(name: string): number | null {
+  const raw = process.env[name];
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function getProviderDefaultPricing(provider: AiProviderId): { inputPerMillion: number; outputPerMillion: number } {
+  if (provider !== 'local') {
+    return DEFAULT_PRICING;
+  }
+
+  // Local models default to zero cost; operators can opt into estimated pricing.
+  return {
+    inputPerMillion: parseEnvCents('LOCAL_LLM_ESTIMATED_INPUT_COST_PER_MILLION_CENTS') ?? 0,
+    outputPerMillion: parseEnvCents('LOCAL_LLM_ESTIMATED_OUTPUT_COST_PER_MILLION_CENTS') ?? 0,
+  };
+}
+
+export function calculateProviderCostCents(
+  provider: AiProviderId,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): number {
+  const pricing = MODEL_PRICING[model] ?? getProviderDefaultPricing(provider);
+  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
+  const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
+  return Math.round((inputCost + outputCost) * 100) / 100;
+}
+
+export function resolveRecordedCostCents(
+  result: { total_cost_usd: number; usage: { input_tokens: number; output_tokens: number } },
+  provider: AiProviderId,
+  model: string,
+): number {
+  if (result.total_cost_usd > 0) {
+    return Math.round(result.total_cost_usd * 100 * 100) / 100; // USD -> cents (2 decimals)
+  }
+
+  return calculateProviderCostCents(
+    provider,
+    model,
+    result.usage.input_tokens ?? 0,
+    result.usage.output_tokens ?? 0,
+  );
 }
 
 /**
@@ -198,13 +248,19 @@ export async function recordUsageFromSdkResult(
     total_cost_usd: number;
     usage: { input_tokens: number; output_tokens: number };
     num_turns: number;
-  }
+  },
+  pricingContext?: {
+    provider?: AiProviderId;
+    model?: string;
+  },
 ): Promise<void> {
   if (!orgId) {
     console.warn(`[AI] Skipping recordUsageFromSdkResult — empty orgId for session=${sessionId}`);
     return;
   }
-  const costCents = Math.round(result.total_cost_usd * 100 * 100) / 100; // USD → cents, 2 decimal places
+  const provider = pricingContext?.provider ?? 'claude';
+  const model = pricingContext?.model ?? 'claude-sonnet-4-5-20250929';
+  const costCents = resolveRecordedCostCents(result, provider, model);
   const { input_tokens: inputTokens, output_tokens: outputTokens } = result.usage;
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;

@@ -1,19 +1,18 @@
 /**
  * Streaming Session Manager
  *
- * Manages persistent Claude Agent SDK Query instances using AsyncIterable
+ * Manages persistent AI provider query instances using AsyncIterable
  * (streaming input mode). Each session holds a long-lived subprocess that
  * accepts follow-up messages without replaying history.
  *
  * Core components:
- * - StreamInputController: AsyncIterable<SDKUserMessage> fed to query({ prompt })
+ * - StreamInputController: AsyncIterable<SDKUserMessage> fed to provider query prompt
  * - SessionEventBus: pub/sub for AiStreamEvent with ring buffer
  * - StreamingSessionManager: singleton Map<string, ActiveSession> with eviction
  * - Background SDK Processor: iterates Query output, translates to AiStreamEvents
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
-import type { Query, SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -26,6 +25,9 @@ import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
+import type { LlmRuntimeQuery } from './llm/types';
+import { createLlmProvider } from './llm/providerRegistry';
+import type { AiProviderId } from '@breeze/shared/types/ai';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -170,8 +172,10 @@ export interface AuditSnapshot {
 
 export interface ActiveSession {
   readonly breezeSessionId: string;
+  readonly provider: AiProviderId;
+  readonly providerModel: string;
   sdkSessionId: string | null;
-  query: Query;
+  query: LlmRuntimeQuery;
   abortController: AbortController;
   inputController: StreamInputController;
   eventBus: SessionEventBus;
@@ -239,6 +243,8 @@ export class StreamingSessionManager {
     breezeSessionId: string,
     dbSession: {
       orgId: string;
+      provider: AiProviderId;
+      providerModel: string;
       sdkSessionId: string | null;
       model: string;
       maxTurns: number;
@@ -301,8 +307,10 @@ export class StreamingSessionManager {
     const now = Date.now();
     const session: ActiveSession = {
       breezeSessionId,
+      provider: dbSession.provider,
+      providerModel: dbSession.providerModel || dbSession.model,
       sdkSessionId: dbSession.sdkSessionId,
-      query: null as unknown as Query, // set below
+      query: null as unknown as LlmRuntimeQuery, // set below
       abortController,
       inputController,
       eventBus,
@@ -361,31 +369,27 @@ export class StreamingSessionManager {
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
     runOutsideDbContextSafe(() => {
-      const sdkQuery = query({
+      const llmProvider = createLlmProvider(dbSession.provider);
+      const runtimeQuery = llmProvider.startQuery({
         prompt: inputController.getInputStream(),
-        options: {
-          systemPrompt: effectiveSystemPrompt,
-          model: dbSession.model,
-          maxTurns,
-          maxBudgetUsd,
-          tools: [],
-          allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
-          mcpServers: { [mcpServerName]: mcpServer },
-          includePartialMessages: true,
-          abortController,
-          resume: dbSession.sdkSessionId ?? undefined,
-          persistSession: true,
-          settingSources: [],
-          thinking: { type: 'disabled' },
-          stderr: (data: string) => {
-            if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-              console.error('[SDK-stderr]', breezeSessionId, data.trim());
-            }
-          },
-        }
+        model: dbSession.providerModel || dbSession.model,
+        systemPrompt: effectiveSystemPrompt,
+        maxTurns,
+        maxBudgetUsd,
+        allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
+        mcpServers: { [mcpServerName]: mcpServer },
+        abortController,
+        resumeSessionId: dbSession.sdkSessionId ?? undefined,
+        persistSession: true,
+        includePartialMessages: true,
+        onStderr: (data: string) => {
+          if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
+            console.error('[SDK-stderr]', breezeSessionId, data.trim());
+          }
+        },
       });
 
-      (session as { query: Query }).query = sdkQuery;
+      (session as { query: LlmRuntimeQuery }).query = runtimeQuery;
 
       // Start background processor (inherits the clean context)
       (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
@@ -661,7 +665,10 @@ export class StreamingSessionManager {
             if (resultMsg.subtype === 'success') {
               try {
                 await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData, {
+                    provider: session.provider,
+                    model: session.providerModel,
+                  })
                 );
               } catch (err) {
                 captureException(err);
@@ -681,7 +688,10 @@ export class StreamingSessionManager {
 
               try {
                 await withSystemDbAccessContext(() =>
-                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData)
+                  recordUsageFromSdkResult(session.breezeSessionId, orgId, usageData, {
+                    provider: session.provider,
+                    model: session.providerModel,
+                  })
                 );
               } catch (err) {
                 captureException(err);

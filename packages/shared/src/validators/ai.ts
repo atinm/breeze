@@ -39,13 +39,17 @@ export const aiPageContextSchema = z.discriminatedUnion('type', [
 
 export const createAiSessionSchema = z.object({
   pageContext: aiPageContextSchema.optional(),
+  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local']).optional(),
+  providerModel: z.string().max(120).optional(),
   model: z.string().max(100).optional(),
   title: z.string().max(255).optional()
 });
 
 export const sendAiMessageSchema = z.object({
   content: z.string().min(1).max(10000),
-  pageContext: aiPageContextSchema.optional()
+  pageContext: aiPageContextSchema.optional(),
+  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local']).optional(),
+  providerModel: z.string().max(120).optional(),
 });
 
 export const approveToolSchema = z.object({
@@ -99,5 +103,7 @@ export const scriptBuilderContextSchema = z.object({
 
 export const createScriptBuilderSessionSchema = z.object({
   context: scriptBuilderContextSchema.optional(),
+  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local']).optional(),
+  providerModel: z.string().max(120).optional(),
   title: z.string().max(255).optional(),
 });

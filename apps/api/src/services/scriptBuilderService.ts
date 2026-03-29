@@ -10,8 +10,9 @@ import { db } from '../db';
 import { aiSessions, aiMessages } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { ScriptBuilderContext } from '@breeze/shared/types/ai';
+import type { ScriptBuilderContext, AiProviderId } from '@breeze/shared/types/ai';
 import { buildScriptBuilderSystemPrompt } from './scriptBuilderPrompt';
+import { resolveSessionProvider, DEFAULT_PROVIDER_MODEL } from './aiProviderConfig';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
@@ -20,19 +21,26 @@ const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
  */
 export async function createScriptBuilderSession(
   auth: AuthContext,
-  options: { context?: ScriptBuilderContext; title?: string },
+  options: { context?: ScriptBuilderContext; title?: string; provider?: AiProviderId; providerModel?: string; model?: string },
 ): Promise<{ id: string; orgId: string }> {
   const orgId = auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
 
   const systemPrompt = buildScriptBuilderSystemPrompt(options.context);
+  const providerSelection = await resolveSessionProvider(
+    orgId,
+    { provider: null, providerModel: null, model: DEFAULT_PROVIDER_MODEL },
+    options,
+  );
 
   const [session] = await db
     .insert(aiSessions)
     .values({
       orgId,
       userId: auth.user.id,
-      model: DEFAULT_MODEL,
+      provider: providerSelection.provider,
+      providerModel: providerSelection.providerModel,
+      model: options.model ?? options.providerModel ?? providerSelection.providerModel ?? DEFAULT_MODEL,
       title: options.title ?? 'Script Builder',
       contextSnapshot: options.context ?? null,
       systemPrompt,

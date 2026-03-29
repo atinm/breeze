@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
 import { streamSSE } from 'hono/streaming';
-import { authMiddleware, requireScope } from '../middleware/auth';
+import { authMiddleware, requireScope, type AuthContext } from '../middleware/auth';
 import {
   createSession,
   getSession,
@@ -25,8 +25,8 @@ import { getUsageSummary, updateBudget, getSessionHistory } from '../services/ai
 import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
-import { aiSessions, aiMessages, aiToolExecutions, auditLogs } from '../db/schema';
-import { eq, and, desc, gte, count, avg, sql as drizzleSql } from 'drizzle-orm';
+import { aiSessions, aiMessages, aiToolExecutions, auditLogs, aiProviderConfigs } from '../db/schema';
+import { eq, and, desc, gte, count, avg, asc, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
@@ -40,6 +40,23 @@ import { captureException } from '../services/sentry';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
+});
+
+const partnerProviderQuerySchema = z.object({
+  partnerId: z.string().uuid().optional(),
+});
+
+const providerConfigParamSchema = z.object({
+  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local']),
+});
+
+const upsertProviderConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  defaultModel: z.string().min(1).max(120),
+  allowedModels: z.array(z.string().min(1).max(120)).nullable().optional(),
+  endpoint: z.string().min(1).nullable().optional(),
+  apiKeyRef: z.string().min(1).nullable().optional(),
+  options: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 /**
@@ -60,6 +77,23 @@ function generateSessionTitle(content: string): string {
 export const aiRoutes = new Hono();
 
 aiRoutes.use('*', authMiddleware);
+
+function resolveTargetPartnerId(
+  auth: AuthContext,
+  requestedPartnerId?: string,
+): string | null {
+  if (auth.scope === 'partner') {
+    if (!auth.partnerId) return null;
+    if (requestedPartnerId && requestedPartnerId !== auth.partnerId) return null;
+    return auth.partnerId;
+  }
+
+  if (auth.scope === 'system') {
+    return requestedPartnerId ?? null;
+  }
+
+  return null;
+}
 
 // ============================================
 // Session CRUD
@@ -88,6 +122,7 @@ aiRoutes.post(
       const message = err instanceof Error ? err.message : 'Failed to create session';
       if (message === 'Organization context required') return c.json({ error: message }, 400);
       if (message === 'Access denied to this organization') return c.json({ error: message }, 403);
+      if (message.includes('provider') || message.includes('Model') || message.includes('model')) return c.json({ error: message }, 400);
       return c.json({ error: message }, 500);
     }
   }
@@ -281,7 +316,14 @@ aiRoutes.post(
     const body = c.req.valid('json');
 
     // Pre-flight checks (rate limits, budget, session status, input sanitization)
-    const preflight = await runPreFlightChecks(sessionId, body.content, auth, body.pageContext, c);
+    const preflight = await runPreFlightChecks(
+      sessionId,
+      body.content,
+      auth,
+      body.pageContext,
+      { provider: body.provider, providerModel: body.providerModel },
+      c,
+    );
     if (!preflight.ok) {
       const err = preflight.error;
       if (err === 'Session not found') return c.json({ error: err }, 404);
@@ -291,13 +333,15 @@ aiRoutes.post(
       return c.json({ error: err }, 400);
     }
 
-    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd } = preflight;
+    const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, provider, providerModel } = preflight;
 
     // Get or create streaming session
     const activeSession = await streamingSessionManager.getOrCreate(
       sessionId,
       {
         orgId: dbSession.orgId,
+        provider,
+        providerModel,
         sdkSessionId: dbSession.sdkSessionId,
         model: dbSession.model,
         maxTurns: dbSession.maxTurns,
@@ -610,6 +654,129 @@ aiRoutes.post(
 // ============================================
 // Usage & Budget
 // ============================================
+
+// GET /provider-configs - list AI provider settings for a partner
+aiRoutes.get(
+  '/provider-configs',
+  requireScope('partner', 'system'),
+  zValidator('query', partnerProviderQuerySchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { partnerId: requestedPartnerId } = c.req.valid('query');
+    const partnerId = resolveTargetPartnerId(auth, requestedPartnerId);
+
+    if (!partnerId) {
+      return c.json({ error: auth.scope === 'system' ? 'partnerId query parameter is required' : 'Access denied to this partner' }, 400);
+    }
+
+    const configs = await db
+      .select({
+        provider: aiProviderConfigs.provider,
+        enabled: aiProviderConfigs.enabled,
+        defaultModel: aiProviderConfigs.defaultModel,
+        allowedModels: aiProviderConfigs.allowedModels,
+        endpoint: aiProviderConfigs.endpoint,
+        apiKeyRef: aiProviderConfigs.apiKeyRef,
+        options: aiProviderConfigs.options,
+        updatedAt: aiProviderConfigs.updatedAt,
+      })
+      .from(aiProviderConfigs)
+      .where(eq(aiProviderConfigs.partnerId, partnerId))
+      .orderBy(asc(aiProviderConfigs.provider));
+
+    return c.json({ data: configs });
+  },
+);
+
+// PUT /provider-configs/:provider - create/update AI provider settings for a partner
+aiRoutes.put(
+  '/provider-configs/:provider',
+  requireScope('partner', 'system'),
+  zValidator('query', partnerProviderQuerySchema),
+  zValidator('param', providerConfigParamSchema),
+  zValidator('json', upsertProviderConfigSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { partnerId: requestedPartnerId } = c.req.valid('query');
+    const { provider } = c.req.valid('param');
+    const body = c.req.valid('json');
+    const partnerId = resolveTargetPartnerId(auth, requestedPartnerId);
+
+    if (!partnerId) {
+      return c.json({ error: auth.scope === 'system' ? 'partnerId query parameter is required' : 'Access denied to this partner' }, 400);
+    }
+
+    await db
+      .insert(aiProviderConfigs)
+      .values({
+        partnerId,
+        provider,
+        enabled: body.enabled ?? true,
+        defaultModel: body.defaultModel,
+        allowedModels: body.allowedModels ?? null,
+        endpoint: body.endpoint ?? null,
+        apiKeyRef: body.apiKeyRef ?? null,
+        options: body.options ?? null,
+      })
+      .onConflictDoUpdate({
+        target: [aiProviderConfigs.partnerId, aiProviderConfigs.provider],
+        set: {
+          enabled: body.enabled ?? true,
+          defaultModel: body.defaultModel,
+          allowedModels: body.allowedModels ?? null,
+          endpoint: body.endpoint ?? null,
+          apiKeyRef: body.apiKeyRef ?? null,
+          options: body.options ?? null,
+          updatedAt: new Date(),
+        },
+      });
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ai.provider_config.upsert',
+      resourceType: 'ai_provider_config',
+      details: { partnerId, provider },
+    });
+
+    return c.json({ success: true });
+  },
+);
+
+// DELETE /provider-configs/:provider - delete AI provider settings for a partner
+aiRoutes.delete(
+  '/provider-configs/:provider',
+  requireScope('partner', 'system'),
+  zValidator('query', partnerProviderQuerySchema),
+  zValidator('param', providerConfigParamSchema),
+  async (c) => {
+    const auth = c.get('auth');
+    const { partnerId: requestedPartnerId } = c.req.valid('query');
+    const { provider } = c.req.valid('param');
+    const partnerId = resolveTargetPartnerId(auth, requestedPartnerId);
+
+    if (!partnerId) {
+      return c.json({ error: auth.scope === 'system' ? 'partnerId query parameter is required' : 'Access denied to this partner' }, 400);
+    }
+
+    const deleted = await db
+      .delete(aiProviderConfigs)
+      .where(and(eq(aiProviderConfigs.partnerId, partnerId), eq(aiProviderConfigs.provider, provider)))
+      .returning({ provider: aiProviderConfigs.provider });
+
+    if (deleted.length === 0) {
+      return c.json({ error: 'Provider config not found' }, 404);
+    }
+
+    writeRouteAudit(c, {
+      orgId: null,
+      action: 'ai.provider_config.delete',
+      resourceType: 'ai_provider_config',
+      details: { partnerId, provider },
+    });
+
+    return c.json({ success: true });
+  },
+);
 
 // GET /usage - Get AI usage and budget for the org
 aiRoutes.get(

@@ -45,6 +45,9 @@ importers:
       '@elastic/elasticsearch':
         specifier: ^9.3.2
         version: 9.3.2
+      '@google/genai':
+        specifier: ^1.30.0
+        version: 1.47.0
       '@hono/node-server':
         specifier: ^1.19.11
         version: 1.19.11(hono@4.12.9)
@@ -2656,6 +2659,15 @@ packages:
     resolution: {integrity: sha512-n2FjE7NAOYyshogdc7KQOl/VZb4sneqPjWouSyia9CMDdMhRX5+RIbqalNmC7LOLzuLAN89VlF2HvG8na9G+zQ==}
     engines: {node: '>=14'}
 
+  '@google/genai@1.47.0':
+    resolution: {integrity: sha512-0VV7AaXm5rQu3oRHNZNEubRAOL2lv5u+YA72eWnDwcOx3B1jFRbvtgL4drRHlocRHOnludvr3xmbQGbR+/RQAQ==}
+    engines: {node: '>=20.0.0'}
+    peerDependencies:
+      '@modelcontextprotocol/sdk': ^1.25.2
+    peerDependenciesMeta:
+      '@modelcontextprotocol/sdk':
+        optional: true
+
   '@grpc/grpc-js@1.14.3':
     resolution: {integrity: sha512-Iq8QQQ/7X3Sac15oB6p0FmUg/klxQvXLeileoqrTRGJYLV+/9tubbr9ipz0GKHjmXVsgFPo/+W+2cA8eNcR+XA==}
     engines: {node: '>=12.10.0'}
@@ -4434,6 +4446,9 @@ packages:
 
   '@types/request@2.48.13':
     resolution: {integrity: sha512-FGJ6udDNUCjd19pp0Q3iTiDkwhYup7J8hpMW9c4k53NrccQFFWKRho6hvtPPEhnXWKvukfwAlB6DbDz4yhH5Gg==}
+
+  '@types/retry@0.12.0':
+    resolution: {integrity: sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==}
 
   '@types/sax@1.2.7':
     resolution: {integrity: sha512-rO73L89PJxeYM3s3pPPjiPgVVcymqU490g0YO5n5By0k2Erzj6tay/4lr1CHAAU4JyOWd1rpQ8bCf6cZfHU96A==}
@@ -7829,6 +7844,10 @@ packages:
   p-queue@9.1.0:
     resolution: {integrity: sha512-O/ZPaXuQV29uSLbxWBGGZO1mCQXV2BLIwUr59JUU9SoH76mnYvtms7aafH/isNSNGwuEfP6W/4xD0/TJXxrizw==}
     engines: {node: '>=20'}
+
+  p-retry@4.6.2:
+    resolution: {integrity: sha512-312Id396EbJdvRONlngUx0NydfrIQ5lsYu0znKVUzVvArzEIt08V1qhtyESbGVd1FGX7UKtiFp5uwKZdM8wIuQ==}
+    engines: {node: '>=8'}
 
   p-timeout@6.1.4:
     resolution: {integrity: sha512-MyIV3ZA/PmyBN/ud8vV9XzwTrNtR4jFrObymZYnZqMmW0zA8Z17vnT0rBgFE/TlohB+YCHqXMgZzb3Csp49vqg==}
@@ -12413,6 +12432,17 @@ snapshots:
       - supports-color
     optional: true
 
+  '@google/genai@1.47.0':
+    dependencies:
+      google-auth-library: 10.6.1
+      p-retry: 4.6.2
+      protobufjs: 7.5.4
+      ws: 8.19.0
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+
   '@grpc/grpc-js@1.14.3':
     dependencies:
       '@grpc/proto-loader': 0.8.0
@@ -13126,38 +13156,28 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@protobufjs/aspromise@1.1.2':
-    optional: true
+  '@protobufjs/aspromise@1.1.2': {}
 
-  '@protobufjs/base64@1.1.2':
-    optional: true
+  '@protobufjs/base64@1.1.2': {}
 
-  '@protobufjs/codegen@2.0.4':
-    optional: true
+  '@protobufjs/codegen@2.0.4': {}
 
-  '@protobufjs/eventemitter@1.1.0':
-    optional: true
+  '@protobufjs/eventemitter@1.1.0': {}
 
   '@protobufjs/fetch@1.1.0':
     dependencies:
       '@protobufjs/aspromise': 1.1.2
       '@protobufjs/inquire': 1.1.0
-    optional: true
 
-  '@protobufjs/float@1.0.2':
-    optional: true
+  '@protobufjs/float@1.0.2': {}
 
-  '@protobufjs/inquire@1.1.0':
-    optional: true
+  '@protobufjs/inquire@1.1.0': {}
 
-  '@protobufjs/path@1.1.2':
-    optional: true
+  '@protobufjs/path@1.1.2': {}
 
-  '@protobufjs/pool@1.1.0':
-    optional: true
+  '@protobufjs/pool@1.1.0': {}
 
-  '@protobufjs/utf8@1.1.0':
-    optional: true
+  '@protobufjs/utf8@1.1.0': {}
 
   '@react-email/render@0.0.16(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
     dependencies:
@@ -14636,6 +14656,8 @@ snapshots:
       '@types/tough-cookie': 4.0.5
       form-data: 2.5.5
     optional: true
+
+  '@types/retry@0.12.0': {}
 
   '@types/sax@1.2.7':
     dependencies:
@@ -18006,8 +18028,7 @@ snapshots:
       yargs: 15.4.1
     optional: true
 
-  long@5.3.2:
-    optional: true
+  long@5.3.2: {}
 
   longest-streak@3.1.0: {}
 
@@ -19246,6 +19267,11 @@ snapshots:
       eventemitter3: 5.0.4
       p-timeout: 7.0.1
 
+  p-retry@4.6.2:
+    dependencies:
+      '@types/retry': 0.12.0
+      retry: 0.13.1
+
   p-timeout@6.1.4: {}
 
   p-timeout@7.0.1: {}
@@ -19551,7 +19577,6 @@ snapshots:
       '@protobufjs/utf8': 1.1.0
       '@types/node': 25.5.0
       long: 5.3.2
-    optional: true
 
   proxy-from-env@1.1.0: {}
 
@@ -20114,8 +20139,7 @@ snapshots:
       - supports-color
     optional: true
 
-  retry@0.13.1:
-    optional: true
+  retry@0.13.1: {}
 
   reusify@1.1.0: {}
 

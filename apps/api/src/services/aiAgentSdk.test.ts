@@ -65,6 +65,11 @@ vi.mock('./aiAgentSdkTools', () => ({
   BREEZE_MCP_TOOL_NAMES: [],
 }));
 
+const mockResolveSessionProvider = vi.fn();
+vi.mock('./aiProviderConfig', () => ({
+  resolveSessionProvider: (...args: unknown[]) => mockResolveSessionProvider(...args),
+}));
+
 // ============================================
 // Test helpers
 // ============================================
@@ -120,6 +125,10 @@ describe('runPreFlightChecks', () => {
     mockSanitizeUserMessage.mockReturnValue({ sanitized: 'hello', flags: [] });
     mockBuildSystemPrompt.mockResolvedValue('system prompt');
     mockGetRemainingBudgetUsd.mockResolvedValue(10.0);
+    mockResolveSessionProvider.mockResolvedValue({
+      provider: 'claude',
+      providerModel: 'claude-sonnet-4-5-20250929',
+    });
   });
 
   // --- Session ---
@@ -372,6 +381,12 @@ describe('runPreFlightChecks', () => {
     expect(result).toEqual({ ok: false, error: 'Unable to verify spending budget. Please try again later.' });
   });
 
+  it('returns provider-selection error when resolver rejects', async () => {
+    mockResolveSessionProvider.mockRejectedValue(new Error('AI provider \'openai\' is disabled for this organization'));
+    const result = await runPreFlightChecks('session-1', 'hello', auth);
+    expect(result).toEqual({ ok: false, error: 'AI provider \'openai\' is disabled for this organization' });
+  });
+
   // --- Successful result ---
 
   it('returns all fields on successful pre-flight', async () => {
@@ -388,6 +403,8 @@ describe('runPreFlightChecks', () => {
       expect(result.sanitizedContent).toBe('clean input');
       expect(result.systemPrompt).toBeDefined();
       expect(result.maxBudgetUsd).toBe(25.0);
+      expect(result.provider).toBe('claude');
+      expect(result.providerModel).toBe('claude-sonnet-4-5-20250929');
     }
   });
 });

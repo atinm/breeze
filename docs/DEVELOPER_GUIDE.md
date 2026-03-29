@@ -163,6 +163,33 @@ MINIO_ACCESS_KEY=minioadmin
 MINIO_SECRET_KEY=minioadmin
 ```
 
+**Optional AI Provider Variables (multi-LLM):**
+
+```env
+# Claude
+ANTHROPIC_API_KEY=
+
+# OpenAI native SDK endpoint
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+
+# Gemini native SDK
+GEMINI_API_KEY=
+# Optional API version override
+GEMINI_API_VERSION=
+
+# Copilot native SDK (requires Copilot CLI auth on host)
+COPILOT_MODEL=
+
+# Local OpenAI-compatible endpoint (Ollama/LM Studio/vLLM)
+LOCAL_LLM_BASE_URL=
+LOCAL_LLM_API_KEY=
+
+# Optional local cost estimates (cents per 1M tokens)
+LOCAL_LLM_ESTIMATED_INPUT_COST_PER_MILLION_CENTS=
+LOCAL_LLM_ESTIMATED_OUTPUT_COST_PER_MILLION_CENTS=
+```
+
 ### Running Services Locally
 
 **1. Start infrastructure services:**

@@ -1,5 +1,5 @@
 import { pgTable, uuid, varchar, text, timestamp, boolean, jsonb, pgEnum, integer, real, index, uniqueIndex } from 'drizzle-orm/pg-core';
-import { organizations } from './orgs';
+import { organizations, partners } from './orgs';
 import { users } from './users';
 import { devices } from './devices';
 
@@ -29,6 +29,9 @@ export const aiSessions = pgTable('ai_sessions', {
   status: aiSessionStatusEnum('status').notNull().default('active'),
   type: text('type').notNull().default('general'),
   title: varchar('title', { length: 255 }),
+  provider: varchar('provider', { length: 20 }).notNull().default('claude'),
+  providerModel: varchar('provider_model', { length: 120 }).notNull().default('claude-sonnet-4-5-20250929'),
+  providerSessionId: varchar('provider_session_id', { length: 255 }),
   model: varchar('model', { length: 100 }).notNull().default('claude-sonnet-4-5-20250929'),
   systemPrompt: text('system_prompt'),
   contextSnapshot: jsonb('context_snapshot'),
@@ -48,7 +51,26 @@ export const aiSessions = pgTable('ai_sessions', {
   orgIdIdx: index('ai_sessions_org_id_idx').on(table.orgId),
   userIdIdx: index('ai_sessions_user_id_idx').on(table.userId),
   statusIdx: index('ai_sessions_status_idx').on(table.status),
+  providerIdx: index('ai_sessions_provider_idx').on(table.provider),
+  providerModelIdx: index('ai_sessions_provider_model_idx').on(table.provider, table.providerModel),
   // flaggedAt partial index created via SQL migration (WHERE flagged_at IS NOT NULL)
+}));
+
+export const aiProviderConfigs = pgTable('ai_provider_configs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  partnerId: uuid('partner_id').notNull().references(() => partners.id),
+  provider: varchar('provider', { length: 20 }).notNull(),
+  enabled: boolean('enabled').notNull().default(true),
+  defaultModel: varchar('default_model', { length: 120 }).notNull(),
+  allowedModels: jsonb('allowed_models'),
+  endpoint: text('endpoint'),
+  apiKeyRef: text('api_key_ref'),
+  options: jsonb('options'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  partnerProviderUniqueIdx: uniqueIndex('ai_provider_configs_partner_provider_unique_idx').on(table.partnerId, table.provider),
+  partnerIdx: index('ai_provider_configs_partner_id_idx').on(table.partnerId),
 }));
 
 // ============================================

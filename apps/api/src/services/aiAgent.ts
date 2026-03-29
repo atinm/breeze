@@ -10,11 +10,12 @@ import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions } from '../db/schema';
 import { eq, and, desc, sql, type SQL } from 'drizzle-orm';
 import type { AuthContext } from '../middleware/auth';
-import type { AiPageContext, AiApprovalMode } from '@breeze/shared/types/ai';
+import type { AiPageContext, AiApprovalMode, AiProviderId } from '@breeze/shared/types/ai';
 import type { ActiveSession } from './streamingSessionManager';
 import { escapeLike } from '../utils/sql';
 import { AI_SYSTEM_PROMPT_BASE } from './aiAgentSystemPrompt';
 import { getActiveDeviceContext } from './brainDeviceContext';
+import { resolveSessionProvider, DEFAULT_PROVIDER_MODEL } from './aiProviderConfig';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
@@ -24,7 +25,14 @@ const DEFAULT_MODEL = 'claude-sonnet-4-5-20250929';
 
 export async function createSession(
   auth: AuthContext,
-  options: { pageContext?: AiPageContext; model?: string; title?: string; orgId?: string }
+  options: {
+    pageContext?: AiPageContext;
+    model?: string;
+    provider?: AiProviderId;
+    providerModel?: string;
+    title?: string;
+    orgId?: string;
+  }
 ): Promise<{ id: string; orgId: string }> {
   const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
@@ -32,12 +40,20 @@ export async function createSession(
     throw new Error('Access denied to this organization');
   }
 
+  const providerSelection = await resolveSessionProvider(
+    orgId,
+    { provider: null, providerModel: null, model: DEFAULT_PROVIDER_MODEL },
+    options,
+  );
+
   const [session] = await db
     .insert(aiSessions)
     .values({
       orgId,
       userId: auth.user.id,
-      model: options.model ?? DEFAULT_MODEL,
+      provider: providerSelection.provider,
+      providerModel: providerSelection.providerModel,
+      model: options.model ?? options.providerModel ?? providerSelection.providerModel ?? DEFAULT_MODEL,
       title: options.title ?? null,
       contextSnapshot: options.pageContext ?? null,
       systemPrompt: await buildSystemPrompt(auth, options.pageContext)
