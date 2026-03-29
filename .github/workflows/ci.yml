@@ -3,14 +3,14 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths-ignore:
       - 'docs/**'
       - 'apps/docs/**'
       - '**/*.md'
       - '**/*.mdx'
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths-ignore:
       - 'docs/**'
       - 'apps/docs/**'

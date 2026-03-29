@@ -2,14 +2,14 @@ name: Docs CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - 'docs/**'
       - 'apps/docs/**'
       - '**/*.md'
       - '**/*.mdx'
   pull_request:
-    branches: [main]
+    branches: [main, 'feat/**']
     paths:
       - 'docs/**'
       - 'apps/docs/**'
