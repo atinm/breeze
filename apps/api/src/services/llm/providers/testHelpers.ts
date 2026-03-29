@@ -1,5 +1,4 @@
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { LlmProviderStartInput } from '../types';
+import type { LlmPromptMessage, LlmProviderStartInput } from '../types';
 
 export function createPromptInput(messages: string[] = []): LlmProviderStartInput {
   return {
@@ -17,7 +16,7 @@ export function createPromptInput(messages: string[] = []): LlmProviderStartInpu
   };
 }
 
-async function* createPromptStream(messages: string[]): AsyncGenerator<SDKUserMessage> {
+async function* createPromptStream(messages: string[]): AsyncGenerator<LlmPromptMessage> {
   for (const message of messages) {
     yield {
       type: 'user',
@@ -27,6 +26,6 @@ async function* createPromptStream(messages: string[]): AsyncGenerator<SDKUserMe
         role: 'user',
         content: message,
       },
-    } satisfies SDKUserMessage;
+    } satisfies LlmPromptMessage;
   }
 }

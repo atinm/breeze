@@ -71,7 +71,12 @@ describe('OpenAICompatibleRuntimeQuery', () => {
       }),
     );
 
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const [requestUrl, requestInit] = fetchMock.mock.calls[0] ?? [];
+    expect(requestUrl).toBe('https://api.openai.com/v1/chat/completions');
+    expect(requestInit).toBeDefined();
+    expect(requestInit?.body).toBeTypeOf('string');
+
+    const body = JSON.parse(requestInit!.body as string);
     expect(body).toEqual({
       model: 'test-model',
       messages: [

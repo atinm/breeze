@@ -6,7 +6,6 @@
  */
 
 import { z } from 'zod';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { executeTool } from './aiTools';
 import { withSystemDbAccessContext } from '../db';
@@ -14,6 +13,7 @@ import type { AiToolTier } from '@breeze/shared/types/ai';
 import { compactToolResultForChat } from './aiToolOutput';
 import { captureException } from './sentry';
 import type { PreToolUseCallback, PostToolUseCallback } from './aiAgentSdkTools';
+import { createToolServer, defineTool as tool } from './llm/toolServer';
 
 const TOOL_EXECUTION_TIMEOUT_MS = 60_000;
 
@@ -264,5 +264,5 @@ export function createScriptBuilderMcpServer(
     ),
   ];
 
-  return createSdkMcpServer({ name: 'script_builder', tools });
+  return createToolServer({ name: 'script_builder', tools });
 }

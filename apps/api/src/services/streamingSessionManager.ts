@@ -6,13 +6,12 @@
  * accepts follow-up messages without replaying history.
  *
  * Core components:
- * - StreamInputController: AsyncIterable<SDKUserMessage> fed to provider query prompt
+ * - StreamInputController: AsyncIterable<LlmPromptMessage> fed to provider query prompt
  * - SessionEventBus: pub/sub for AiStreamEvent with ring buffer
  * - StreamingSessionManager: singleton Map<string, ActiveSession> with eviction
  * - Background SDK Processor: iterates Query output, translates to AiStreamEvents
  */
 
-import type { SDKResultMessage, SDKUserMessage, McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { db, withSystemDbAccessContext, runOutsideDbContext } from '../db';
 import { aiSessions, aiMessages, aiBudgets } from '../db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -25,10 +24,12 @@ import { captureException } from './sentry';
 import { createBreezeMcpServer, BREEZE_MCP_TOOL_NAMES } from './aiAgentSdkTools';
 import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk';
 import type { RequestLike } from './auditEvents';
-import type { LlmRuntimeQuery } from './llm/types';
+import type { LlmPromptMessage, LlmQueryMessage, LlmResultMessage, LlmRuntimeQuery } from './llm/types';
+import type { ToolServerDefinition } from './llm/toolServer';
 import { createLlmProvider } from './llm/providerRegistry';
 import type { AiProviderId } from '@breeze/shared/types/ai';
 import { resolveProviderRuntimeConfig } from './aiProviderConfig';
+import { buildRemoteMcpServerDefinition } from './llm/mcpRemoteServer';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -40,12 +41,34 @@ const MCP_PREFIX = 'mcp__breeze__';
 // Use the directly-imported runOutsideDbContext (see commandQueue.ts for explanation).
 const runOutsideDbContextSafe = runOutsideDbContext;
 
+function isToolUseBlock(block: unknown): block is {
+  type: 'tool_use';
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+} {
+  if (!block || typeof block !== 'object') return false;
+  const candidate = block as Record<string, unknown>;
+  return candidate.type === 'tool_use'
+    && typeof candidate.id === 'string'
+    && typeof candidate.name === 'string'
+    && !!candidate.input
+    && typeof candidate.input === 'object'
+    && !Array.isArray(candidate.input);
+}
+
+function isTextContentBlock(block: unknown): block is { type: 'text'; text?: string } {
+  if (!block || typeof block !== 'object') return false;
+  const candidate = block as Record<string, unknown>;
+  return candidate.type === 'text' && (!('text' in candidate) || typeof candidate.text === 'string');
+}
+
 // ============================================
 // StreamInputController
 // ============================================
 
 /**
- * Wraps an AsyncEventQueue<SDKUserMessage> as the prompt source for query().
+ * Wraps an AsyncEventQueue<LlmPromptMessage> as the prompt source for query().
  * Follow-up messages are pushed via pushMessage() — no subprocess restart needed.
  *
  * NOTE: The first message is pushed with whatever session_id is known (empty string
@@ -54,11 +77,11 @@ const runOutsideDbContextSafe = runOutsideDbContext;
  * event (which only arrives after the subprocess starts).
  */
 export class StreamInputController {
-  private queue = new AsyncEventQueue<SDKUserMessage>();
+  private queue = new AsyncEventQueue<LlmPromptMessage>();
   private sdkSessionId: string | null = null;
 
   /** Feed this to query({ prompt }) */
-  getInputStream(): AsyncIterable<SDKUserMessage> {
+  getInputStream(): AsyncIterable<LlmPromptMessage> {
     return this.queue;
   }
 
@@ -80,7 +103,7 @@ export class StreamInputController {
    * (the SDK assigns session IDs internally for new sessions).
    */
   pushMessage(content: string): void {
-    const message: SDKUserMessage = {
+    const message: LlmPromptMessage = {
       type: 'user',
       message: { role: 'user', content },
       parent_tool_use_id: null,
@@ -186,7 +209,7 @@ export interface ActiveSession {
   auth: AuthContext;
   /** Immutable audit data extracted from the latest request (avoids holding stale Hono context) */
   auditSnapshot: AuditSnapshot;
-  mcpServer: McpSdkServerConfigWithInstance;
+  mcpServer: ToolServerDefinition;
   /** MCP tool name prefix for stripping in SSE events (e.g. 'mcp__breeze__' or 'mcp__script_builder__') */
   mcpPrefix: string;
   /** FIFO queue of toolUseIds from content_block_start for postToolUse correlation */
@@ -262,7 +285,7 @@ export class StreamingSessionManager {
       onPreToolUse: ReturnType<typeof createSessionPreToolUse>,
       onPostToolUse: ReturnType<typeof createSessionPostToolUse>,
       getSession: () => ActiveSession,
-    ) => { server: McpSdkServerConfigWithInstance; name: string },
+    ) => { server: ToolServerDefinition; name: string },
   ): Promise<ActiveSession> {
     const snapshot: AuditSnapshot = {
       ip: requestContext?.req.header('x-forwarded-for') ?? requestContext?.req.header('x-real-ip'),
@@ -320,7 +343,7 @@ export class StreamingSessionManager {
       createdAt: now,
       auth,
       auditSnapshot: snapshot,
-      mcpServer: null as unknown as McpSdkServerConfigWithInstance, // set below
+      mcpServer: null as unknown as ToolServerDefinition, // set below
       mcpPrefix: MCP_PREFIX, // updated below if custom factory
       toolUseIdQueue: [],
       processorPromise: Promise.resolve(),
@@ -339,7 +362,7 @@ export class StreamingSessionManager {
 
     // Create MCP server with pre/post tool-use callbacks
     // Use custom factory if provided (e.g., script builder), otherwise default to breeze tools
-    let mcpServer: McpSdkServerConfigWithInstance;
+    let mcpServer: ToolServerDefinition;
     let mcpServerName = 'breeze';
     if (mcpServerFactory) {
       const custom = mcpServerFactory(() => session.auth, preToolUse, postToolUse, () => session);
@@ -377,6 +400,12 @@ export class StreamingSessionManager {
           baseUrl: runtimeConfig.endpoint ?? undefined,
           model: dbSession.providerModel || dbSession.model,
         });
+        const remoteMcpServer = await buildRemoteMcpServerDefinition(
+          breezeSessionId,
+          mcpServerName,
+          mcpServer,
+        );
+
         const runtimeQuery = llmProvider.startQuery({
           prompt: inputController.getInputStream(),
           model: dbSession.providerModel || dbSession.model,
@@ -384,7 +413,7 @@ export class StreamingSessionManager {
           maxTurns,
           maxBudgetUsd,
           allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
-          mcpServers: { [mcpServerName]: mcpServer },
+          mcpServers: { [mcpServerName]: remoteMcpServer },
           abortController,
           resumeSessionId: dbSession.sdkSessionId ?? undefined,
           persistSession: true,
@@ -521,7 +550,7 @@ export class StreamingSessionManager {
     let messageStarted = false;
 
     try {
-      for await (const message of session.query) {
+      for await (const message of session.query as AsyncIterable<LlmQueryMessage>) {
         // Stop publishing if session is being torn down
         if (session.state === 'closing' || session.state === 'closed') break;
 
@@ -559,7 +588,7 @@ export class StreamingSessionManager {
                 session.eventBus.publish({ type: 'content_delta', delta: event.delta.text });
               }
             } else if (event.type === 'content_block_start') {
-              if ('content_block' in event && event.content_block.type === 'tool_use') {
+              if ('content_block' in event && isToolUseBlock(event.content_block)) {
                 const block = event.content_block;
 
                 // Track toolUseId for postToolUse correlation.
@@ -591,8 +620,8 @@ export class StreamingSessionManager {
 
           case 'assistant': {
             const assistantContent = message.message.content
-              .filter((b: { type: string }) => b.type === 'text')
-              .map((b: { type: string; text?: string }) => b.text ?? '')
+              .filter(isTextContentBlock)
+              .map((b) => b.text ?? '')
               .join('');
 
             try {
@@ -612,7 +641,7 @@ export class StreamingSessionManager {
             }
 
             for (const block of message.message.content) {
-              if (block.type === 'tool_use') {
+              if (isToolUseBlock(block)) {
                 const bareName = block.name.startsWith(session.mcpPrefix)
                   ? block.name.slice(session.mcpPrefix.length)
                   : block.name;
@@ -645,7 +674,7 @@ export class StreamingSessionManager {
             // Clear per-turn timeout on result
             this.clearTurnTimeout(session);
 
-            const resultMsg = message as SDKResultMessage;
+            const resultMsg: LlmResultMessage = message;
             const orgId = session.auth.orgId;
 
             if (!orgId) {
@@ -689,7 +718,7 @@ export class StreamingSessionManager {
                 console.error('[StreamingSessionManager] Failed to record SDK usage:', err);
               }
             } else {
-              const errors = 'errors' in resultMsg ? resultMsg.errors : [];
+              const errors = resultMsg.errors ?? [];
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
 
               if (resultMsg.subtype === 'error_max_budget_usd') {

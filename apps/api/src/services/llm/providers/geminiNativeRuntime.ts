@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncEventQueue } from '../../../utils/asyncQueue';
 import type { LlmProviderStartInput, LlmRuntimeQuery } from '../types';
+import { compileGeminiMcpTools } from '../adapters/geminiMcpAdapter';
 
 type GeminiRuntimeConfig = {
   apiKey: string;
@@ -13,7 +13,7 @@ type GeminiClient = {
     generateContent(input: {
       model: string;
       contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
-      config?: { systemInstruction?: string };
+      config?: { systemInstruction?: string; tools?: unknown[] };
     }): Promise<unknown>;
   };
 };
@@ -75,8 +75,7 @@ export class GeminiNativeRuntimeQuery implements LlmRuntimeQuery {
     try {
       for await (const incoming of this.input.prompt) {
         if (this.closed) break;
-        const msg = incoming as SDKUserMessage;
-        const content = msg?.message?.content;
+        const content = incoming.message.content;
         if (typeof content !== 'string' || !content.trim()) continue;
         await this.processTurn(content);
       }
@@ -124,7 +123,10 @@ export class GeminiNativeRuntimeQuery implements LlmRuntimeQuery {
         client.models.generateContent({
           model: this.input.model,
           contents: turnContents,
-          config: { systemInstruction: this.input.systemPrompt },
+          config: {
+            systemInstruction: this.input.systemPrompt,
+            tools: compileGeminiMcpTools(this.input.mcpServers),
+          },
         }),
         abortPromise,
       ]);

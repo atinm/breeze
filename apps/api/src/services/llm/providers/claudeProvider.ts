@@ -1,4 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { compileAnthropicToolServers } from '../adapters/anthropicMcpAdapter';
 import type { LlmProvider, LlmProviderStartInput, LlmRuntimeQuery } from '../types';
 
 export class ClaudeProvider implements LlmProvider {
@@ -6,7 +8,7 @@ export class ClaudeProvider implements LlmProvider {
 
   startQuery(input: LlmProviderStartInput): LlmRuntimeQuery {
     return query({
-      prompt: input.prompt,
+      prompt: input.prompt as AsyncIterable<SDKUserMessage>,
       options: {
         systemPrompt: input.systemPrompt,
         model: input.model,
@@ -14,7 +16,7 @@ export class ClaudeProvider implements LlmProvider {
         maxBudgetUsd: input.maxBudgetUsd,
         tools: [],
         allowedTools: input.allowedTools,
-        mcpServers: input.mcpServers,
+        mcpServers: compileAnthropicToolServers(input.mcpServers),
         includePartialMessages: input.includePartialMessages,
         abortController: input.abortController,
         resume: input.resumeSessionId,

@@ -7,7 +7,6 @@
  */
 
 import { z } from 'zod';
-import { tool, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
 import type { AuthContext } from '../middleware/auth';
 import { db, withSystemDbAccessContext, withDbAccessContext, runOutsideDbContext } from '../db';
 import type { DbAccessContext } from '../db';
@@ -18,6 +17,7 @@ import { compactToolResultForChat } from './aiToolOutput';
 import type { ActiveSession } from './streamingSessionManager';
 import { waitForPlanApproval } from './aiAgent';
 import { aiActionPlans } from '../db/schema';
+import { createToolServer, defineTool as tool } from './llm/toolServer';
 
 /**
  * Callback invoked before tool execution to enforce guardrails, RBAC,
@@ -1425,7 +1425,7 @@ export function createBreezeMcpServer(
     ),
   ];
 
-  return createSdkMcpServer({
+  return createToolServer({
     name: 'breeze',
     version: '1.0.0',
     tools,

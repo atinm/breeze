@@ -2,14 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createOpenAINativeQuery } from './openaiNativeRuntime';
 import { createPromptInput } from './testHelpers';
 
-const createCompletionMock = vi.fn();
+const createResponseMock = vi.fn();
 
 vi.mock('openai', () => ({
   default: class {
-    chat = {
-      completions: {
-        create: (...args: unknown[]) => createCompletionMock(...args),
-      },
+    responses = {
+      create: (...args: unknown[]) => createResponseMock(...args),
     };
   },
 }));
@@ -28,11 +26,12 @@ describe('OpenAINativeRuntimeQuery', () => {
   });
 
   it('emits assistant events using OpenAI SDK', async () => {
-    createCompletionMock.mockResolvedValue({
-      choices: [{ message: { content: 'OpenAI answer' } }],
+    createResponseMock.mockResolvedValue({
+      id: 'resp_123',
+      output_text: 'OpenAI answer',
       usage: {
-        prompt_tokens: 13,
-        completion_tokens: 6,
+        input_tokens: 13,
+        output_tokens: 6,
       },
     });
 
@@ -43,14 +42,13 @@ describe('OpenAINativeRuntimeQuery', () => {
 
     const events = await collectEvents(query);
 
-    expect(createCompletionMock).toHaveBeenCalledTimes(1);
-    expect(createCompletionMock).toHaveBeenCalledWith({
+    expect(createResponseMock).toHaveBeenCalledTimes(1);
+    expect(createResponseMock).toHaveBeenCalledWith({
       model: 'test-model',
-      messages: [
-        { role: 'system', content: 'System prompt' },
-        { role: 'user', content: 'hello' },
-      ],
-      stream: false,
+      input: 'hello',
+      instructions: 'System prompt',
+      previous_response_id: undefined,
+      tools: [],
     });
 
     expect(events).toEqual(expect.arrayContaining([
@@ -69,7 +67,7 @@ describe('OpenAINativeRuntimeQuery', () => {
   });
 
   it('emits error result when OpenAI SDK call fails', async () => {
-    createCompletionMock.mockRejectedValue(new Error('openai unavailable'));
+    createResponseMock.mockRejectedValue(new Error('openai unavailable'));
 
     const query = createOpenAINativeQuery(createPromptInput(['hello']), {
       apiKey: 'test-key',

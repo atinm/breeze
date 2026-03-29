@@ -1,5 +1,4 @@
 import { randomUUID } from 'crypto';
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncEventQueue } from '../../../utils/asyncQueue';
 import type { LlmProviderStartInput, LlmRuntimeQuery } from '../types';
 
@@ -89,8 +88,7 @@ export class CopilotNativeRuntimeQuery implements LlmRuntimeQuery {
     try {
       for await (const incoming of this.input.prompt) {
         if (this.closed) break;
-        const msg = incoming as SDKUserMessage;
-        const content = msg?.message?.content;
+        const content = incoming.message.content;
         if (typeof content !== 'string' || !content.trim()) continue;
         await this.processTurn(content);
       }

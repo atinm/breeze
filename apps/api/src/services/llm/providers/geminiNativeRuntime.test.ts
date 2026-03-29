@@ -45,7 +45,7 @@ describe('GeminiNativeRuntimeQuery', () => {
     expect(generateContentMock).toHaveBeenCalledWith(
       expect.objectContaining({
         model: 'test-model',
-        config: { systemInstruction: 'System prompt' },
+        config: { systemInstruction: 'System prompt', tools: [] },
       }),
     );
 

@@ -1,34 +1,39 @@
 import { randomUUID } from 'crypto';
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncEventQueue } from '../../../utils/asyncQueue';
 import type { LlmProviderStartInput, LlmRuntimeQuery } from '../types';
+import { compileOpenAIMcpTools } from '../adapters/openaiMcpAdapter';
 
 type OpenAINativeConfig = {
   apiKey: string;
   baseUrl?: string;
 };
 
-type OpenAIChatCompletion = {
-  choices?: Array<{
-    message?: {
-      content?: string | Array<{ type?: string; text?: string }>;
-    };
+type OpenAIResponse = {
+  id: string;
+  output_text?: string;
+  output?: Array<{
+    id?: string;
+    type?: string;
+    name?: string;
+    server_label?: string;
+    arguments?: string;
+    error?: string | null;
   }>;
   usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
   };
 };
 
 type OpenAIClient = {
-  chat: {
-    completions: {
-      create(input: {
-        model: string;
-        messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>;
-        stream?: false;
-      }): Promise<OpenAIChatCompletion>;
-    };
+  responses: {
+    create(input: {
+      model: string;
+      input: string;
+      instructions?: string;
+      previous_response_id?: string;
+      tools?: unknown[];
+    }): Promise<OpenAIResponse>;
   };
 };
 
@@ -36,32 +41,20 @@ type OpenAIModule = {
   default: new (options: { apiKey: string; baseURL?: string }) => OpenAIClient;
 };
 
-function extractAssistantText(response: OpenAIChatCompletion): string {
-  const content = response.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => (part?.type === 'text' ? part.text ?? '' : ''))
-      .join('');
-  }
-  return '';
-}
-
 export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
   private readonly output = new AsyncEventQueue<any>();
-  private readonly messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
   private currentRequestController: AbortController | null = null;
   private interrupted = false;
   private closed = false;
   private readonly sessionId: string;
   private clientPromise: Promise<OpenAIClient> | null = null;
+  private previousResponseId: string | null = null;
 
   constructor(
     private readonly input: LlmProviderStartInput,
     private readonly config: OpenAINativeConfig,
   ) {
     this.sessionId = input.resumeSessionId ?? `openai-${randomUUID()}`;
-    this.messages.push({ role: 'system', content: input.systemPrompt });
     this.output.push({ type: 'system', subtype: 'init', session_id: this.sessionId });
     void this.processInputLoop();
   }
@@ -84,8 +77,7 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
     try {
       for await (const incoming of this.input.prompt) {
         if (this.closed) break;
-        const msg = incoming as SDKUserMessage;
-        const content = msg?.message?.content;
+        const content = incoming.message.content;
         if (typeof content !== 'string' || !content.trim()) continue;
         await this.processTurn(content);
       }
@@ -107,7 +99,6 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
 
   private async processTurn(userContent: string): Promise<void> {
     this.interrupted = false;
-    this.messages.push({ role: 'user', content: userContent });
     this.output.push({ type: 'stream_event', event: { type: 'message_start' } });
 
     let assistantText = '';
@@ -126,17 +117,20 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
       });
 
       const response = await Promise.race([
-        client.chat.completions.create({
+        client.responses.create({
           model: this.input.model,
-          messages: [...this.messages],
-          stream: false,
+          input: userContent,
+          instructions: this.previousResponseId ? undefined : this.input.systemPrompt,
+          previous_response_id: this.previousResponseId ?? undefined,
+          tools: compileOpenAIMcpTools(this.input.mcpServers, this.input.allowedTools),
         }),
         abortPromise,
       ]);
 
-      assistantText = extractAssistantText(response);
-      inputTokens = response.usage?.prompt_tokens ?? 0;
-      outputTokens = response.usage?.completion_tokens ?? 0;
+      this.previousResponseId = response.id;
+      assistantText = response.output_text ?? '';
+      inputTokens = response.usage?.input_tokens ?? 0;
+      outputTokens = response.usage?.output_tokens ?? 0;
 
       if (assistantText) {
         this.output.push({
@@ -156,12 +150,20 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
         },
       });
 
-      this.messages.push({ role: 'assistant', content: assistantText });
-
       this.output.push({
         type: 'assistant',
         message: {
-          content: [{ type: 'text', text: assistantText }],
+          content: [
+            ...((response.output ?? [])
+              .filter((item) => item.type === 'mcp_call' && typeof item.name === 'string' && typeof item.id === 'string')
+              .map((item) => ({
+                type: 'tool_use' as const,
+                id: item.id!,
+                name: `mcp__${item.server_label ?? this.findServerLabelForTool(item.name!)}__${item.name!}`,
+                input: parseToolArguments(item.arguments),
+              }))),
+            { type: 'text', text: assistantText },
+          ],
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -194,6 +196,12 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
     }
   }
 
+  private findServerLabelForTool(toolName: string): string {
+    const matched = Object.values(this.input.mcpServers).find((server) => this.input.allowedTools
+      .some((allowed) => allowed === `${server.toolNamePrefix}${toolName}`));
+    return matched?.name ?? 'breeze';
+  }
+
   async interrupt(): Promise<void> {
     this.interrupted = true;
     if (this.currentRequestController) {
@@ -209,6 +217,18 @@ export class OpenAINativeRuntimeQuery implements LlmRuntimeQuery {
 
   [Symbol.asyncIterator](): AsyncIterator<any> {
     return this.output[Symbol.asyncIterator]();
+  }
+}
+
+function parseToolArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
   }
 }
 

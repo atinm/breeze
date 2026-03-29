@@ -1,82 +1,82 @@
 import { randomUUID } from 'crypto';
-import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { AsyncEventQueue } from '../../../utils/asyncQueue';
 import type { LlmProviderStartInput, LlmRuntimeQuery } from '../types';
+import { compileOpenAIMcpTools } from '../adapters/openaiMcpAdapter';
 
-type LocalAiSdkConfig = {
+type LocalRuntimeConfig = {
   baseUrl: string;
   apiKey?: string;
 };
 
-type LocalModelProvider = {
-  chat?: (modelId: string) => unknown;
-  (modelId: string): unknown;
-};
-
-type CreateOpenAI = (options: { baseURL?: string; apiKey?: string }) => LocalModelProvider;
-
-type GenerateTextResult = {
-  text?: string;
+type LocalResponse = {
+  id: string;
+  output_text?: string;
+  output?: Array<{
+    id?: string;
+    type?: string;
+    name?: string;
+    server_label?: string;
+    arguments?: string;
+  }>;
   usage?: {
-    inputTokens?: number;
-    outputTokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
   };
 };
 
-type GenerateText = (input: {
-  model: unknown;
-  system?: string;
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>;
-  abortSignal?: AbortSignal;
-}) => Promise<GenerateTextResult>;
+type LocalClient = {
+  responses: {
+    create(input: {
+      model: string;
+      input: string;
+      instructions?: string;
+      previous_response_id?: string;
+      tools?: unknown[];
+    }): Promise<LocalResponse>;
+  };
+};
+
+type OpenAIModule = {
+  default: new (options: { apiKey?: string; baseURL: string }) => LocalClient;
+};
 
 export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
   private readonly output = new AsyncEventQueue<any>();
-  private readonly messages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   private currentRequestController: AbortController | null = null;
   private interrupted = false;
   private closed = false;
   private readonly sessionId: string;
-  private providerPromise: Promise<LocalModelProvider> | null = null;
-  private generateTextPromise: Promise<GenerateText> | null = null;
+  private clientPromise: Promise<LocalClient> | null = null;
+  private previousResponseId: string | null = null;
 
   constructor(
     private readonly input: LlmProviderStartInput,
-    private readonly config: LocalAiSdkConfig,
+    private readonly config: LocalRuntimeConfig,
   ) {
     this.sessionId = input.resumeSessionId ?? `local-${randomUUID()}`;
     this.output.push({ type: 'system', subtype: 'init', session_id: this.sessionId });
     void this.processInputLoop();
   }
 
-  private async getProvider(): Promise<LocalModelProvider> {
-    if (!this.providerPromise) {
-      this.providerPromise = import('@ai-sdk/openai')
+  private async getClient(): Promise<LocalClient> {
+    if (!this.clientPromise) {
+      this.clientPromise = import('openai')
         .then((mod) => {
-          const createOpenAI = (mod as unknown as { createOpenAI: CreateOpenAI }).createOpenAI;
-          return createOpenAI({
-            baseURL: this.config.baseUrl,
+          const openAiModule = mod as unknown as OpenAIModule;
+          return new openAiModule.default({
             apiKey: this.config.apiKey,
+            baseURL: this.config.baseUrl,
           });
         });
     }
-    return this.providerPromise;
-  }
-
-  private async getGenerateText(): Promise<GenerateText> {
-    if (!this.generateTextPromise) {
-      this.generateTextPromise = import('ai')
-        .then((mod) => (mod as unknown as { generateText: GenerateText }).generateText);
-    }
-    return this.generateTextPromise;
+    return this.clientPromise;
   }
 
   private async processInputLoop(): Promise<void> {
     try {
       for await (const incoming of this.input.prompt) {
         if (this.closed) break;
-        const msg = incoming as SDKUserMessage;
-        const content = msg?.message?.content;
+        const content = incoming.message.content;
         if (typeof content !== 'string' || !content.trim()) continue;
         await this.processTurn(content);
       }
@@ -98,7 +98,6 @@ export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
 
   private async processTurn(userContent: string): Promise<void> {
     this.interrupted = false;
-    this.messages.push({ role: 'user', content: userContent });
     this.output.push({ type: 'stream_event', event: { type: 'message_start' } });
 
     let assistantText = '';
@@ -111,19 +110,26 @@ export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
       this.currentRequestController = requestController;
       this.input.abortController.signal.addEventListener('abort', abortForwarder, { once: true });
 
-      const [provider, generateText] = await Promise.all([this.getProvider(), this.getGenerateText()]);
-      const modelHandle = provider.chat ? provider.chat(this.input.model) : provider(this.input.model);
-
-      const response = await generateText({
-        model: modelHandle,
-        system: this.input.systemPrompt,
-        messages: [...this.messages],
-        abortSignal: requestController.signal,
+      const client = await this.getClient();
+      const abortPromise = new Promise<never>((_, reject) => {
+        requestController.signal.addEventListener('abort', () => reject(new Error('Interrupted')), { once: true });
       });
 
-      assistantText = response.text ?? '';
-      inputTokens = response.usage?.inputTokens ?? 0;
-      outputTokens = response.usage?.outputTokens ?? 0;
+      const response = await Promise.race([
+        client.responses.create({
+          model: this.input.model,
+          input: userContent,
+          instructions: this.previousResponseId ? undefined : this.input.systemPrompt,
+          previous_response_id: this.previousResponseId ?? undefined,
+          tools: compileOpenAIMcpTools(this.input.mcpServers, this.input.allowedTools),
+        }),
+        abortPromise,
+      ]);
+
+      this.previousResponseId = response.id;
+      assistantText = response.output_text ?? '';
+      inputTokens = response.usage?.input_tokens ?? 0;
+      outputTokens = response.usage?.output_tokens ?? 0;
 
       if (assistantText) {
         this.output.push({
@@ -143,12 +149,20 @@ export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
         },
       });
 
-      this.messages.push({ role: 'assistant', content: assistantText });
-
       this.output.push({
         type: 'assistant',
         message: {
-          content: [{ type: 'text', text: assistantText }],
+          content: [
+            ...((response.output ?? [])
+              .filter((item) => item.type === 'mcp_call' && typeof item.name === 'string' && typeof item.id === 'string')
+              .map((item) => ({
+                type: 'tool_use' as const,
+                id: item.id!,
+                name: `mcp__${item.server_label ?? this.findServerLabelForTool(item.name!)}__${item.name!}`,
+                input: parseToolArguments(item.arguments),
+              }))),
+            { type: 'text', text: assistantText },
+          ],
           usage: {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
@@ -181,6 +195,12 @@ export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
     }
   }
 
+  private findServerLabelForTool(toolName: string): string {
+    const matched = Object.values(this.input.mcpServers).find((server) => this.input.allowedTools
+      .some((allowed) => allowed === `${server.toolNamePrefix}${toolName}`));
+    return matched?.name ?? 'breeze';
+  }
+
   async interrupt(): Promise<void> {
     this.interrupted = true;
     this.currentRequestController?.abort();
@@ -199,7 +219,19 @@ export class LocalAiSdkRuntimeQuery implements LlmRuntimeQuery {
 
 export function createLocalAiSdkQuery(
   input: LlmProviderStartInput,
-  config: LocalAiSdkConfig,
+  config: LocalRuntimeConfig,
 ): LlmRuntimeQuery {
   return new LocalAiSdkRuntimeQuery(input, config);
+}
+
+function parseToolArguments(raw: string | undefined): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
