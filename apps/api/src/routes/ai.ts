@@ -37,6 +37,7 @@ import {
 } from '@breeze/shared/validators/ai';
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
+import { mergeProviderConfigOptions, toProviderConfigResponse } from '../services/llm/providerConfigOptions';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
@@ -56,6 +57,9 @@ const upsertProviderConfigSchema = z.object({
   allowedModels: z.array(z.string().min(1).max(120)).nullable().optional(),
   endpoint: z.string().min(1).nullable().optional(),
   apiKeyRef: z.string().min(1).nullable().optional(),
+  apiKey: z.string().min(1).nullable().optional(),
+  localEstimatedInputCostPerMillionCents: z.number().nonnegative().nullable().optional(),
+  localEstimatedOutputCostPerMillionCents: z.number().nonnegative().nullable().optional(),
   options: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
@@ -684,7 +688,18 @@ aiRoutes.get(
       .where(eq(aiProviderConfigs.partnerId, partnerId))
       .orderBy(asc(aiProviderConfigs.provider));
 
-    return c.json({ data: configs });
+    return c.json({
+      data: configs.map((config) => {
+        const normalized = toProviderConfigResponse(config.options);
+        return {
+          ...config,
+          options: normalized.options,
+          apiKeySet: normalized.apiKeySet,
+          localEstimatedInputCostPerMillionCents: normalized.localEstimatedInputCostPerMillionCents,
+          localEstimatedOutputCostPerMillionCents: normalized.localEstimatedOutputCostPerMillionCents,
+        };
+      }),
+    });
   },
 );
 
@@ -706,6 +721,18 @@ aiRoutes.put(
       return c.json({ error: auth.scope === 'system' ? 'partnerId query parameter is required' : 'Access denied to this partner' }, 400);
     }
 
+    const [existing] = await db
+      .select({ options: aiProviderConfigs.options })
+      .from(aiProviderConfigs)
+      .where(and(eq(aiProviderConfigs.partnerId, partnerId), eq(aiProviderConfigs.provider, provider)))
+      .limit(1);
+
+    const mergedOptions = mergeProviderConfigOptions(body.options ?? existing?.options ?? null, {
+      apiKey: body.apiKey,
+      localEstimatedInputCostPerMillionCents: body.localEstimatedInputCostPerMillionCents,
+      localEstimatedOutputCostPerMillionCents: body.localEstimatedOutputCostPerMillionCents,
+    });
+
     await db
       .insert(aiProviderConfigs)
       .values({
@@ -716,7 +743,7 @@ aiRoutes.put(
         allowedModels: body.allowedModels ?? null,
         endpoint: body.endpoint ?? null,
         apiKeyRef: body.apiKeyRef ?? null,
-        options: body.options ?? null,
+        options: mergedOptions,
       })
       .onConflictDoUpdate({
         target: [aiProviderConfigs.partnerId, aiProviderConfigs.provider],
@@ -726,7 +753,7 @@ aiRoutes.put(
           allowedModels: body.allowedModels ?? null,
           endpoint: body.endpoint ?? null,
           apiKeyRef: body.apiKeyRef ?? null,
-          options: body.options ?? null,
+          options: mergedOptions,
           updatedAt: new Date(),
         },
       });

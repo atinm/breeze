@@ -169,9 +169,8 @@ MINIO_SECRET_KEY=minioadmin
 # Claude
 ANTHROPIC_API_KEY=
 
-# OpenAI native SDK endpoint
+# OpenAI native SDK
 OPENAI_API_KEY=
-OPENAI_BASE_URL=
 
 # Gemini native SDK
 GEMINI_API_KEY=
@@ -180,6 +179,8 @@ GEMINI_API_VERSION=
 
 # Copilot native SDK (requires Copilot CLI auth on host)
 COPILOT_MODEL=
+# Note: Copilot is intended for self-hosted/single-tenant deployments where
+# the partner controls the host and its GitHub/Copilot authentication context.
 
 # Local OpenAI-compatible endpoint (Ollama/LM Studio/vLLM)
 LOCAL_LLM_BASE_URL=
@@ -189,6 +190,10 @@ LOCAL_LLM_API_KEY=
 LOCAL_LLM_ESTIMATED_INPUT_COST_PER_MILLION_CENTS=
 LOCAL_LLM_ESTIMATED_OUTPUT_COST_PER_MILLION_CENTS=
 ```
+
+Partner admins can also configure provider endpoint, API key, and local-model estimated token pricing
+in the UI at `Settings -> Partner -> AI Providers`. Environment variables remain fallback defaults when
+partner-level provider config is not set.
 
 ### Running Services Locally
 

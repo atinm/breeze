@@ -6,12 +6,13 @@
  */
 
 import { db } from '../db';
-import { aiSessions, aiCostUsage, aiBudgets } from '../db/schema';
+import { aiSessions, aiCostUsage, aiBudgets, organizations, aiProviderConfigs } from '../db/schema';
 import { eq, and, sql, desc, isNotNull } from 'drizzle-orm';
 import { getRedis } from './redis';
 import { rateLimiter } from './rate-limit';
 import { getEffectiveAiBudget } from './effectiveSettings';
 import type { AiProviderId } from '@breeze/shared/types/ai';
+import { parseProviderConfigOptions } from './llm/providerConfigOptions';
 
 // Cost per million tokens (in cents)
 const MODEL_PRICING: Record<string, { inputPerMillion: number; outputPerMillion: number }> = {
@@ -75,6 +76,31 @@ export function resolveRecordedCostCents(
     result.usage.input_tokens ?? 0,
     result.usage.output_tokens ?? 0,
   );
+}
+
+async function getLocalPricingForOrg(
+  orgId: string,
+): Promise<{ inputPerMillion: number; outputPerMillion: number } | null> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) return null;
+
+  const [config] = await db
+    .select({ options: aiProviderConfigs.options })
+    .from(aiProviderConfigs)
+    .where(and(eq(aiProviderConfigs.partnerId, org.partnerId), eq(aiProviderConfigs.provider, 'local')))
+    .limit(1);
+
+  if (!config) return null;
+  const options = parseProviderConfigOptions(config.options);
+  const input = options.localEstimatedInputCostPerMillionCents;
+  const output = options.localEstimatedOutputCostPerMillionCents;
+  if (typeof input !== 'number' || typeof output !== 'number') return null;
+  return { inputPerMillion: input, outputPerMillion: output };
 }
 
 /**
@@ -260,7 +286,15 @@ export async function recordUsageFromSdkResult(
   }
   const provider = pricingContext?.provider ?? 'claude';
   const model = pricingContext?.model ?? 'claude-sonnet-4-5-20250929';
-  const costCents = resolveRecordedCostCents(result, provider, model);
+  let costCents = resolveRecordedCostCents(result, provider, model);
+  if (result.total_cost_usd <= 0 && provider === 'local') {
+    const localPricing = await getLocalPricingForOrg(orgId);
+    if (localPricing) {
+      const inputCost = (result.usage.input_tokens / 1_000_000) * localPricing.inputPerMillion;
+      const outputCost = (result.usage.output_tokens / 1_000_000) * localPricing.outputPerMillion;
+      costCents = Math.round((inputCost + outputCost) * 100) / 100;
+    }
+  }
   const { input_tokens: inputTokens, output_tokens: outputTokens } = result.usage;
   const now = new Date();
   const dailyKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;

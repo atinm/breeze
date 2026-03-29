@@ -12,6 +12,9 @@ type ProviderConfig = {
   allowedModels: string[] | null;
   endpoint: string | null;
   apiKeyRef: string | null;
+  apiKeySet?: boolean;
+  localEstimatedInputCostPerMillionCents?: number | null;
+  localEstimatedOutputCostPerMillionCents?: number | null;
   options?: Record<string, unknown> | null;
   updatedAt?: string;
 };
@@ -22,6 +25,10 @@ type ProviderFormState = {
   allowedModelsText: string;
   endpoint: string;
   apiKeyRef: string;
+  apiKey: string;
+  apiKeySet: boolean;
+  localEstimatedInputCostPerMillionCents: string;
+  localEstimatedOutputCostPerMillionCents: string;
 };
 
 type Props = {
@@ -51,7 +58,25 @@ function normalizeForm(config?: ProviderConfig): ProviderFormState {
     allowedModelsText: (config?.allowedModels ?? []).join(', '),
     endpoint: config?.endpoint ?? '',
     apiKeyRef: config?.apiKeyRef ?? '',
+    apiKey: '',
+    apiKeySet: config?.apiKeySet ?? false,
+    localEstimatedInputCostPerMillionCents:
+      typeof config?.localEstimatedInputCostPerMillionCents === 'number'
+        ? String(config.localEstimatedInputCostPerMillionCents)
+        : '',
+    localEstimatedOutputCostPerMillionCents:
+      typeof config?.localEstimatedOutputCostPerMillionCents === 'number'
+        ? String(config.localEstimatedOutputCostPerMillionCents)
+        : '',
   };
+}
+
+function parseOptionalNonNegativeNumber(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
 }
 
 export default function PartnerAiProvidersTab({ partnerId }: Props) {
@@ -112,6 +137,13 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
       return;
     }
 
+    const localInputCost = parseOptionalNonNegativeNumber(form.localEstimatedInputCostPerMillionCents);
+    const localOutputCost = parseOptionalNonNegativeNumber(form.localEstimatedOutputCostPerMillionCents);
+    if (localInputCost === null || localOutputCost === null) {
+      setError('Local estimated cost fields must be non-negative numbers');
+      return;
+    }
+
     try {
       setSavingProvider(provider);
       setError(null);
@@ -123,6 +155,9 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
           allowedModels: parseAllowedModels(form.allowedModelsText),
           endpoint: form.endpoint.trim() || null,
           apiKeyRef: form.apiKeyRef.trim() || null,
+          apiKey: form.apiKey.trim() || undefined,
+          localEstimatedInputCostPerMillionCents: localInputCost,
+          localEstimatedOutputCostPerMillionCents: localOutputCost,
           options: null,
         }),
       });
@@ -149,7 +184,7 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || `Failed to delete ${provider} provider config`);
       }
-      setForms((prev) => ({ ...prev, [provider]: normalizeForm() }));
+      setForms((prev) => ({ ...prev, [provider]: normalizeForm({ provider, enabled: true, defaultModel: '', allowedModels: null, endpoint: null, apiKeyRef: null, apiKeySet: false }) }));
       showToast({ type: 'success', message: `${provider} provider settings cleared` });
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to delete ${provider} provider config`);
@@ -239,6 +274,43 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                 />
               </div>
+              <div className="space-y-1 md:col-span-2">
+                <label className="text-xs font-medium text-muted-foreground">
+                  API Key (optional)
+                </label>
+                <input
+                  type="password"
+                  value={form.apiKey}
+                  onChange={(e) => updateProvider(provider.id, { apiKey: e.target.value })}
+                  placeholder={form.apiKeySet ? 'Leave blank to keep existing key' : 'sk-...'}
+                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                />
+                {form.apiKeySet && !form.apiKey && (
+                  <p className="text-xs text-muted-foreground">A key is already stored. Leave blank to keep it.</p>
+                )}
+              </div>
+              {provider.id === 'local' && (
+                <>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Local Input Cost / 1M Tokens (cents)</label>
+                    <input
+                      value={form.localEstimatedInputCostPerMillionCents}
+                      onChange={(e) => updateProvider(provider.id, { localEstimatedInputCostPerMillionCents: e.target.value })}
+                      placeholder="0"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-muted-foreground">Local Output Cost / 1M Tokens (cents)</label>
+                    <input
+                      value={form.localEstimatedOutputCostPerMillionCents}
+                      onChange={(e) => updateProvider(provider.id, { localEstimatedOutputCostPerMillionCents: e.target.value })}
+                      placeholder="0"
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="mt-4 flex items-center gap-2">

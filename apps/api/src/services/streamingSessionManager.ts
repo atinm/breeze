@@ -28,6 +28,7 @@ import type { RequestLike } from './auditEvents';
 import type { LlmRuntimeQuery } from './llm/types';
 import { createLlmProvider } from './llm/providerRegistry';
 import type { AiProviderId } from '@breeze/shared/types/ai';
+import { resolveProviderRuntimeConfig } from './aiProviderConfig';
 
 const SESSION_IDLE_TIMEOUT_MS = 2 * 60 * 60 * 1000; // 2h idle eviction (aligned with pre-flight check)
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h hard limit
@@ -369,33 +370,46 @@ export class StreamingSessionManager {
     // tool handlers inherit the transaction context and hang after the HTTP
     // request completes and the transaction commits.
     runOutsideDbContextSafe(() => {
-      const llmProvider = createLlmProvider(dbSession.provider);
-      const runtimeQuery = llmProvider.startQuery({
-        prompt: inputController.getInputStream(),
-        model: dbSession.providerModel || dbSession.model,
-        systemPrompt: effectiveSystemPrompt,
-        maxTurns,
-        maxBudgetUsd,
-        allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
-        mcpServers: { [mcpServerName]: mcpServer },
-        abortController,
-        resumeSessionId: dbSession.sdkSessionId ?? undefined,
-        persistSession: true,
-        includePartialMessages: true,
-        onStderr: (data: string) => {
-          if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
-            console.error('[SDK-stderr]', breezeSessionId, data.trim());
-          }
-        },
-      });
+      void (async () => {
+        const runtimeConfig = await resolveProviderRuntimeConfig(dbSession.orgId, dbSession.provider);
+        const llmProvider = createLlmProvider(dbSession.provider, {
+          apiKey: runtimeConfig.apiKey ?? undefined,
+          baseUrl: runtimeConfig.endpoint ?? undefined,
+          model: dbSession.providerModel || dbSession.model,
+        });
+        const runtimeQuery = llmProvider.startQuery({
+          prompt: inputController.getInputStream(),
+          model: dbSession.providerModel || dbSession.model,
+          systemPrompt: effectiveSystemPrompt,
+          maxTurns,
+          maxBudgetUsd,
+          allowedTools: allowedTools ?? BREEZE_MCP_TOOL_NAMES,
+          mcpServers: { [mcpServerName]: mcpServer },
+          abortController,
+          resumeSessionId: dbSession.sdkSessionId ?? undefined,
+          persistSession: true,
+          includePartialMessages: true,
+          onStderr: (data: string) => {
+            if (data.includes('error') || data.includes('Error') || data.includes('FATAL')) {
+              console.error('[SDK-stderr]', breezeSessionId, data.trim());
+            }
+          },
+        });
 
-      (session as { query: LlmRuntimeQuery }).query = runtimeQuery;
+        (session as { query: LlmRuntimeQuery }).query = runtimeQuery;
 
-      // Start background processor (inherits the clean context)
-      (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
-      session.processorPromise.catch((err) => {
+        // Start background processor (inherits the clean context)
+        (session as { processorPromise: Promise<void> }).processorPromise = this.runBackgroundProcessor(session);
+        session.processorPromise.catch((err) => {
+          captureException(err);
+          console.error('[StreamingSessionManager] Background processor error:', err);
+        });
+      })().catch((err) => {
         captureException(err);
-        console.error('[StreamingSessionManager] Background processor error:', err);
+        console.error('[StreamingSessionManager] Failed to initialize provider query:', err);
+        session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(err) });
+        session.eventBus.publish({ type: 'done' });
+        this.remove(breezeSessionId);
       });
     });
 

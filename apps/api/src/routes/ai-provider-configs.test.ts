@@ -168,6 +168,11 @@ describe('AI provider config routes', () => {
   });
 
   it('PUT /provider-configs/:provider upserts config for system scope', async () => {
+    const mockSelectLimit = vi.fn().mockResolvedValue([]);
+    const mockSelectWhere = vi.fn().mockReturnValue({ limit: mockSelectLimit });
+    const mockSelectFrom = vi.fn().mockReturnValue({ where: mockSelectWhere });
+    vi.mocked(db.select).mockReturnValue({ from: mockSelectFrom } as any);
+
     const mockOnConflict = vi.fn().mockResolvedValue(undefined);
     const mockValues = vi.fn().mockReturnValue({ onConflictDoUpdate: mockOnConflict });
     vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);

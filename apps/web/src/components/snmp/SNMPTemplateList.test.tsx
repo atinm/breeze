@@ -105,6 +105,7 @@ describe('SNMPTemplateList', () => {
     await screen.findByText('Edge Custom');
 
     fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Template' }));
 
     await waitFor(() => {
       const deleteCalls = fetchWithAuthMock.mock.calls.filter(([url, options]) =>
