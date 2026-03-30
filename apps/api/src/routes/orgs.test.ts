@@ -99,6 +99,7 @@ describe('org routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     setAuthContext();
     app = new Hono();
     app.route('/orgs', orgRoutes);
@@ -373,19 +374,54 @@ describe('org routes', () => {
   describe('GET /orgs/organizations/:id', () => {
     it('should return an organization', async () => {
       setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
-      vi.mocked(db.select).mockReturnValue({
-        from: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({
-            limit: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org' }])
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org', settings: {} }])
+            })
           })
-        })
-      } as any);
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: {} }])
+            })
+          })
+        } as any);
 
       const res = await app.request('/orgs/organizations/org-1');
 
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.id).toBe('org-1');
+    });
+
+    it('should fill empty enrollment secret from the env-backed fallback', async () => {
+      setAuthContext({ scope: 'partner', partnerId: 'partner-123' });
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', 'fallback-secret');
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'org-1', name: 'Org', settings: { defaults: {} } }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ settings: { defaults: {} } }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/orgs/organizations/org-1');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.settings.defaults.enrollmentSecret).toBe('fallback-secret');
     });
 
     it('should return 404 when organization not found', async () => {

@@ -15,8 +15,22 @@ type OrganizationFormValues = {
   type: 'customer' | 'internal';
   status: 'active' | 'trial' | 'suspended' | 'churned';
   maxDevices: number;
+  enrollmentSecret?: string;
   contractStart?: string;
   contractEnd?: string;
+};
+
+type OrganizationDetails = Organization & {
+  slug?: string;
+  type?: 'customer' | 'internal';
+  maxDevices?: number;
+  contractStart?: string;
+  contractEnd?: string;
+  settings?: {
+    defaults?: {
+      enrollmentSecret?: string;
+    };
+  };
 };
 
 const statusLabels: Record<Organization['status'], string> = {
@@ -37,8 +51,10 @@ export default function OrganizationsPage() {
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [showEnrollmentSecret, setShowEnrollmentSecret] = useState(false);
   const [modalMode, setModalMode] = useState<ModalMode>('closed');
-  const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
+  const [selectedOrg, setSelectedOrg] = useState<OrganizationDetails | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -98,6 +114,29 @@ export default function OrganizationsPage() {
     }
   }, []);
 
+  const fetchOrganizationDetails = useCallback(async (org: Organization | OrganizationDetails) => {
+    setDetailLoading(true);
+    try {
+      setError(undefined);
+      const response = await fetchWithAuth(`/orgs/organizations/${org.id}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch organization details');
+      }
+
+      const details = await response.json();
+      setSelectedOrg({
+        ...org,
+        ...details
+      });
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+      return false;
+    } finally {
+      setDetailLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     fetchOrganizations();
   }, [fetchOrganizations]);
@@ -115,9 +154,11 @@ export default function OrganizationsPage() {
     setModalMode('add');
   };
 
-  const handleEdit = (org: Organization) => {
-    setSelectedOrg(org);
-    setModalMode('edit');
+  const handleEdit = async (org: Organization | OrganizationDetails) => {
+    const ok = await fetchOrganizationDetails(org);
+    if (ok) {
+      setModalMode('edit');
+    }
   };
 
   const handleDelete = (org: Organization) => {
@@ -125,10 +166,16 @@ export default function OrganizationsPage() {
     setModalMode('delete');
   };
 
-  const handleSelectOrg = (org: Organization) => {
-    setSelectedOrg(prev => prev?.id === org.id ? prev : org);
+  const handleSelectOrg = async (org: Organization) => {
+    if (selectedOrg?.id === org.id) {
+      return;
+    }
+
+    setSelectedOrg(org);
+    setShowEnrollmentSecret(false);
     setSiteModalMode('closed');
     setSelectedSite(null);
+    await fetchOrganizationDetails(org);
   };
 
   const handleCloseModal = () => {
@@ -142,10 +189,28 @@ export default function OrganizationsPage() {
         ? `/orgs/organizations/${selectedOrg.id}`
         : '/orgs/organizations';
       const method = modalMode === 'edit' ? 'PATCH' : 'POST';
+      const currentSettings = selectedOrg?.settings ?? {};
+      const currentDefaults = currentSettings.defaults ?? {};
+
+      const payload = {
+        name: values.name,
+        slug: values.slug,
+        type: values.type,
+        status: values.status,
+        contractStart: values.contractStart || null,
+        contractEnd: values.contractEnd || null,
+        settings: {
+          ...currentSettings,
+          defaults: {
+            ...currentDefaults,
+            enrollmentSecret: values.enrollmentSecret ?? ''
+          },
+        }
+      };
 
       const response = await fetchWithAuth(url, {
         method,
-        body: JSON.stringify(values)
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -153,6 +218,9 @@ export default function OrganizationsPage() {
       }
 
       await fetchOrganizations();
+      if (method === 'PATCH' && selectedOrg) {
+        await fetchOrganizationDetails(selectedOrg);
+      }
       handleCloseModal();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
@@ -285,6 +353,16 @@ export default function OrganizationsPage() {
     contactPhone: site.contact?.phone ?? ''
   });
 
+  const enrollmentSecret = selectedOrg?.settings?.defaults?.enrollmentSecret ?? '';
+  const maskedEnrollmentSecret = enrollmentSecret ? '•'.repeat(Math.max(12, Math.min(enrollmentSecret.length, 24))) : 'Not configured';
+  const typeLabel = selectedOrg?.type === 'internal' ? 'Internal' : 'Customer';
+  const contractLabel = selectedOrg?.contractEnd
+    ? new Date(selectedOrg.contractEnd).toLocaleDateString()
+    : 'No end date';
+  const contractSubLabel = selectedOrg?.contractStart
+    ? `Started ${new Date(selectedOrg.contractStart).toLocaleDateString()}`
+    : 'No contract dates set';
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -316,8 +394,8 @@ export default function OrganizationsPage() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Organizations & Sites</h1>
-          <p className="text-muted-foreground">Manage organizations and their sites.</p>
+          <h1 className="text-xl font-semibold tracking-tight">Organizations</h1>
+          <p className="text-muted-foreground">Browse organizations, manage CRUD, and inspect their sites.</p>
         </div>
         <button
           type="button"
@@ -466,18 +544,70 @@ export default function OrganizationsPage() {
 
               {/* Sites section */}
               <div className="p-6">
-                {sitesLoading ? (
+                {detailLoading ? (
                   <div className="flex items-center justify-center py-8">
                     <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                    <span className="ml-3 text-sm text-muted-foreground">Loading sites...</span>
+                    <span className="ml-3 text-sm text-muted-foreground">Loading organization details...</span>
                   </div>
                 ) : (
-                  <SiteList
-                    sites={sites}
-                    onAddSite={handleAddSite}
-                    onEdit={handleEditSite}
-                    onDelete={handleDeleteSite}
-                  />
+                  <>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="rounded-md border bg-muted/40 p-4">
+                        <p className="text-xs uppercase text-muted-foreground">Slug</p>
+                        <p className="mt-2 text-sm font-medium">{selectedOrg.slug || 'Not set'}</p>
+                      </div>
+                      <div className="rounded-md border bg-muted/40 p-4">
+                        <p className="text-xs uppercase text-muted-foreground">Type</p>
+                        <p className="mt-2 text-sm font-medium">{typeLabel}</p>
+                      </div>
+                      <div className="rounded-md border bg-muted/40 p-4">
+                        <p className="text-xs uppercase text-muted-foreground">Contract</p>
+                        <p className="mt-2 text-sm font-medium">{contractLabel}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{contractSubLabel}</p>
+                      </div>
+                      <div className="rounded-md border bg-muted/40 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs uppercase text-muted-foreground">Agent enrollment secret</p>
+                            <p className="mt-2 font-mono text-sm">
+                              {showEnrollmentSecret ? (enrollmentSecret || 'Not configured') : maskedEnrollmentSecret}
+                            </p>
+                          </div>
+                          {enrollmentSecret ? (
+                            <button
+                              type="button"
+                              onClick={() => setShowEnrollmentSecret((current) => !current)}
+                              className="rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-background"
+                            >
+                              {showEnrollmentSecret ? 'Hide' : 'Show'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-6 border-t pt-6">
+                      <div className="mb-4 flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">Sites</h3>
+                          <p className="text-sm text-muted-foreground">Manage sites for this organization.</p>
+                        </div>
+                      </div>
+                      {sitesLoading ? (
+                        <div className="flex items-center justify-center py-8">
+                          <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+                          <span className="ml-3 text-sm text-muted-foreground">Loading sites...</span>
+                        </div>
+                      ) : (
+                        <SiteList
+                          sites={sites}
+                          onAddSite={handleAddSite}
+                          onEdit={handleEditSite}
+                          onDelete={handleDeleteSite}
+                        />
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             </>
@@ -525,7 +655,13 @@ export default function OrganizationsPage() {
                 selectedOrg
                   ? {
                       name: selectedOrg.name,
-                      status: selectedOrg.status
+                      slug: selectedOrg.slug ?? '',
+                      type: selectedOrg.type ?? 'customer',
+                      status: selectedOrg.status,
+                      maxDevices: selectedOrg.maxDevices ?? 50,
+                      contractStart: selectedOrg.contractStart ? String(selectedOrg.contractStart).slice(0, 10) : '',
+                      contractEnd: selectedOrg.contractEnd ? String(selectedOrg.contractEnd).slice(0, 10) : '',
+                      enrollmentSecret: selectedOrg.settings?.defaults?.enrollmentSecret ?? ''
                     }
                   : undefined
               }

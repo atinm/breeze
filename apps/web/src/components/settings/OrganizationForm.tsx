@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -16,6 +16,7 @@ const organizationSchema = z
       .number({ invalid_type_error: 'Enter a max device limit' })
       .int('Max devices must be a whole number')
       .min(1, 'Max devices must be at least 1'),
+    enrollmentSecret: z.string().optional(),
     contractStart: z.string().optional(),
     contractEnd: z.string().optional()
   })
@@ -55,6 +56,21 @@ const statusOptions = [
   { value: 'churned', label: 'Churned' }
 ];
 
+function generateEnrollmentSecret(length = 32) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const randomValues = new Uint32Array(length);
+
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(randomValues);
+  } else {
+    for (let i = 0; i < length; i += 1) {
+      randomValues[i] = Math.floor(Math.random() * chars.length);
+    }
+  }
+
+  return Array.from(randomValues, (value) => chars[value % chars.length]).join('');
+}
+
 export default function OrganizationForm({
   onSubmit,
   onCancel,
@@ -65,6 +81,8 @@ export default function OrganizationForm({
   const {
     register,
     handleSubmit,
+    setValue,
+    watch,
     formState: { errors, isSubmitting }
   } = useForm<OrganizationFormValues>({
     resolver: zodResolver(organizationSchema),
@@ -74,6 +92,7 @@ export default function OrganizationForm({
       type: 'customer',
       status: 'active',
       maxDevices: 50,
+      enrollmentSecret: '',
       contractStart: '',
       contractEnd: '',
       ...defaultValues
@@ -81,6 +100,13 @@ export default function OrganizationForm({
   });
 
   const isLoading = useMemo(() => loading ?? isSubmitting, [loading, isSubmitting]);
+  const [showEnrollmentSecret, setShowEnrollmentSecret] = useState(false);
+  const initialEnrollmentSecret = defaultValues?.enrollmentSecret ?? '';
+  const currentEnrollmentSecret = watch('enrollmentSecret') ?? '';
+  const enrollmentSecretChanged = currentEnrollmentSecret !== initialEnrollmentSecret;
+  const handleGenerateEnrollmentSecret = () => {
+    setValue('enrollmentSecret', generateEnrollmentSecret(), { shouldDirty: true, shouldValidate: true });
+  };
 
   return (
     <form
@@ -166,6 +192,46 @@ export default function OrganizationForm({
           {errors.maxDevices && (
             <p className="text-sm text-destructive">{errors.maxDevices.message}</p>
           )}
+        </div>
+
+        <div className="space-y-2 md:col-span-2">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="organization-enrollment-secret" className="text-sm font-medium">
+              Agent enrollment secret
+            </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowEnrollmentSecret((current) => !current)}
+                className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition hover:bg-muted"
+              >
+                {showEnrollmentSecret ? 'Hide' : 'Show'}
+              </button>
+              <button
+                type="button"
+                onClick={handleGenerateEnrollmentSecret}
+                className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition hover:bg-muted"
+              >
+                Generate
+              </button>
+            </div>
+          </div>
+          <input
+            id="organization-enrollment-secret"
+            type={showEnrollmentSecret ? 'text' : 'password'}
+            placeholder="Optional secret required during agent enrollment"
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            {...register('enrollmentSecret')}
+          />
+          <p className="text-xs text-muted-foreground">
+            Used with organization enrollment keys during new agent enrollment. If left unchanged, the existing secret remains in place.
+          </p>
+          {enrollmentSecretChanged ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Changing the agent enrollment secret will invalidate existing enrollment commands and enrollment keys that rely on the previous secret. New device enrollments must use the updated secret.
+            </div>
+          ) : null}
+          {errors.enrollmentSecret && <p className="text-sm text-destructive">{errors.enrollmentSecret.message}</p>}
         </div>
 
         <div className="space-y-2">

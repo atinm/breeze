@@ -82,6 +82,8 @@ const TOOL_PERMISSIONS: Record<string, { resource: string; action: string } | Re
   query_devices: { resource: 'devices', action: 'read' },
   get_device_details: { resource: 'devices', action: 'read' },
   analyze_metrics: { resource: 'devices', action: 'read' },
+  get_active_users: { resource: 'devices', action: 'read' },
+  get_user_experience_metrics: { resource: 'devices', action: 'read' },
   get_s1_status: { resource: 'organizations', action: 'read' },
   get_s1_threats: { resource: 'devices', action: 'read' },
   s1_isolate_device: { resource: 'devices', action: 'execute' },

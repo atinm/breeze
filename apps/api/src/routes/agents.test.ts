@@ -144,6 +144,7 @@ describe('agent routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     // Reset db mock implementations to factory defaults (clearAllMocks doesn't reset mockReturnValue)
     vi.mocked(db.select).mockImplementation(() => defaultSelectChain() as any);
     vi.mocked(db.insert).mockImplementation(() => defaultInsertChain() as any);
@@ -254,6 +255,63 @@ describe('agent routes', () => {
       });
 
       expect(res.status).toBe(401);
+    });
+
+    it('should reject an invalid organization enrollment secret', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.update)
+        .mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{
+                id: 'key-123',
+                key: 'hashed-enroll-key',
+                orgId: 'org-123',
+                siteId: 'site-123',
+                usageCount: 1
+              }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(undefined)
+          })
+        } as any);
+
+      vi.mocked(db.select).mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{
+              settings: {
+                defaults: {
+                  enrollmentSecret: 'org-secret-123'
+                }
+              }
+            }])
+          })
+        })
+      } as any);
+
+      const res = await app.request('/agents/enroll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enrollmentKey: 'enroll-key',
+          enrollmentSecret: 'wrong-secret',
+          hostname: 'agent-host',
+          osType: 'linux',
+          osVersion: '1.0',
+          architecture: 'x86_64',
+          agentVersion: '2.0'
+        })
+      });
+
+      expect(res.status).toBe(403);
+      const body = await res.json();
+      expect(body.error).toBe('Invalid enrollment secret');
     });
   });
 

@@ -4,9 +4,9 @@ import Breadcrumbs from '../../components/layout/Breadcrumbs';
 import PartnerAdminPage from '../../components/admin/PartnerAdminPage';
 ---
 
-<DashboardLayout title="Admin Partners">
+<DashboardLayout title="Partners">
   <Breadcrumbs client:load items={[
-    { label: 'Admin' },
+    { label: 'Settings', href: '/settings' },
     { label: 'Partners' }
   ]} />
   <PartnerAdminPage client:load />

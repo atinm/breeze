@@ -14,6 +14,7 @@ import {
 } from '../../db/schema';
 import { writeAuditEvent } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { getOrgEnrollmentSecret } from '../../services/orgEnrollmentSecret';
 import { enrollSchema } from './schemas';
 import { generateAgentId, generateApiKey, issueMtlsCertForDevice } from './helpers';
 import { queueWarrantySyncForDevice } from '../../services/warrantyWorker';
@@ -23,24 +24,6 @@ export const enrollmentRoutes = new Hono();
 
 enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => {
   const data = c.req.valid('json');
-  const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
-  const requireSecret = (process.env.NODE_ENV ?? 'development') === 'production'
-    && typeof configuredSecret === 'string'
-    && configuredSecret.length > 0;
-
-  if (requireSecret) {
-    const provided = (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
-    if (!provided) {
-      return c.json({ error: 'Enrollment secret required' }, 403);
-    }
-
-    const providedBuf = Buffer.from(provided);
-    const configuredBuf = Buffer.from(configuredSecret);
-    if (providedBuf.length !== configuredBuf.length || !timingSafeEqual(providedBuf, configuredBuf)) {
-      return c.json({ error: 'Invalid enrollment secret' }, 403);
-    }
-  }
-
   const hashedEnrollmentKey = hashEnrollmentKey(data.enrollmentKey);
 
   return withSystemDbAccessContext(async () => {
@@ -58,6 +41,26 @@ enrollmentRoutes.post('/enroll', zValidator('json', enrollSchema), async (c) => 
 
     if (!key) {
       return c.json({ error: 'Invalid or expired enrollment key' }, 401);
+    }
+
+    const configuredSecret = await getOrgEnrollmentSecret(key.orgId);
+    const requireSecret = (process.env.NODE_ENV ?? 'development') === 'production'
+      && typeof configuredSecret === 'string'
+      && configuredSecret.length > 0;
+
+    if (requireSecret) {
+      const provided = (data.enrollmentSecret ?? c.req.header('x-agent-enrollment-secret') ?? '').trim();
+      if (!provided) {
+        await db.update(enrollmentKeys).set({ usageCount: sql`${enrollmentKeys.usageCount} - 1` }).where(eq(enrollmentKeys.id, key.id));
+        return c.json({ error: 'Enrollment secret required' }, 403);
+      }
+
+      const providedBuf = Buffer.from(provided);
+      const configuredBuf = Buffer.from(configuredSecret);
+      if (providedBuf.length !== configuredBuf.length || !timingSafeEqual(providedBuf, configuredBuf)) {
+        await db.update(enrollmentKeys).set({ usageCount: sql`${enrollmentKeys.usageCount} - 1` }).where(eq(enrollmentKeys.id, key.id));
+        return c.json({ error: 'Invalid enrollment secret' }, 403);
+      }
     }
 
     const siteId = key.siteId;

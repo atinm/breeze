@@ -77,11 +77,51 @@ const updateRoleSchema = z.object({
   parentRoleId: z.string().uuid().nullable().optional()
 });
 
+const SYSTEM_ROLE_ID = 'system-admin';
+const SYSTEM_ROLE_NAME = 'System Admin';
+const SYSTEM_ROLE_DESCRIPTION = 'Full administrative access across all partners and organizations.';
+
+function buildSyntheticSystemRole(userCount = 0) {
+  const timestamp = new Date(0);
+  return {
+    id: SYSTEM_ROLE_ID,
+    name: SYSTEM_ROLE_NAME,
+    description: SYSTEM_ROLE_DESCRIPTION,
+    scope: 'system' as const,
+    isSystem: true,
+    parentRoleId: null,
+    parentRoleName: null,
+    userCount,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
 type ScopeContext =
+  | { scope: 'system' }
   | { scope: 'partner'; partnerId: string }
   | { scope: 'organization'; orgId: string };
 
-function getScopeContext(auth: { scope: string; partnerId: string | null; orgId: string | null }): ScopeContext {
+function getScopeContext(
+  auth: { scope: string; partnerId: string | null; orgId: string | null; canAccessOrg?: (orgId: string) => boolean },
+  requestedOrgId?: string | null,
+  requestedPartnerId?: string | null,
+): ScopeContext {
+  if (auth.scope === 'system' && requestedOrgId) {
+    if (auth.canAccessOrg && !auth.canAccessOrg(requestedOrgId)) {
+      throw new HTTPException(403, { message: 'Access denied to this organization' });
+    }
+    return { scope: 'organization', orgId: requestedOrgId };
+  }
+
+  if (auth.scope === 'system' && requestedPartnerId) {
+    return { scope: 'partner', partnerId: requestedPartnerId };
+  }
+
+  if (auth.scope === 'system') {
+    return { scope: 'system' };
+  }
+
   if (auth.scope === 'partner' && auth.partnerId) {
     return { scope: 'partner', partnerId: auth.partnerId };
   }
@@ -316,11 +356,22 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
 
     let rolesData;
 
-    if (scopeContext.scope === 'partner') {
+    if (scopeContext.scope === 'system') {
+      const [systemUserCount] = await db
+        .select({ count: count() })
+        .from(users)
+        .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+        .where(and(sql`${partnerUsers.userId} IS NULL`, sql`${organizationUsers.userId} IS NULL`));
+
+      return c.json({
+        data: [buildSyntheticSystemRole(Number(systemUserCount?.count ?? 0))]
+      });
+    } else if (scopeContext.scope === 'partner') {
       rolesData = await db
         .select({
           id: roles.id,
@@ -423,8 +474,12 @@ roleRoutes.post(
   zValidator('json', createRoleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const body = c.req.valid('json');
+
+    if (scopeContext.scope === 'system') {
+      return c.json({ error: 'System roles cannot be created from this endpoint' }, 400);
+    }
 
     // Validate parent role if provided
     if (body.parentRoleId) {
@@ -532,8 +587,26 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
+
+    if (scopeContext.scope === 'system') {
+      if (roleId !== SYSTEM_ROLE_ID) {
+        return c.json({ error: 'Role not found' }, 404);
+      }
+
+      const [result] = await db
+        .select({ count: count() })
+        .from(users)
+        .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+        .where(and(sql`${partnerUsers.userId} IS NULL`, sql`${organizationUsers.userId} IS NULL`));
+
+      return c.json({
+        ...buildSyntheticSystemRole(Number(result?.count ?? 0)),
+        permissions: []
+      });
+    }
 
     // Get role
     const [role] = await db
@@ -594,7 +667,7 @@ roleRoutes.get(
           )
         );
       userCount = Number(result?.count || 0);
-    } else {
+    } else if (scopeContext.scope === 'organization') {
       const [result] = await db
         .select({ count: count() })
         .from(organizationUsers)
@@ -604,6 +677,14 @@ roleRoutes.get(
             eq(organizationUsers.roleId, roleId)
           )
         );
+      userCount = Number(result?.count || 0);
+    } else {
+      const [result] = await db
+        .select({ count: count() })
+        .from(users)
+        .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+        .where(and(sql`${partnerUsers.userId} IS NULL`, sql`${organizationUsers.userId} IS NULL`));
       userCount = Number(result?.count || 0);
     }
 
@@ -641,7 +722,7 @@ roleRoutes.patch(
   zValidator('json', updateRoleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
     const body = c.req.valid('json');
 
@@ -796,7 +877,7 @@ roleRoutes.delete(
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
 
     // Get role
@@ -896,9 +977,13 @@ roleRoutes.post(
   zValidator('json', z.object({ name: z.string().min(1).max(100) })),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
     const { name } = c.req.valid('json');
+
+    if (scopeContext.scope === 'system') {
+      return c.json({ error: 'System roles cannot be cloned from this endpoint' }, 400);
+    }
 
     // Get source role
     const [sourceRole] = await db
@@ -1029,8 +1114,29 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
+
+    if (scopeContext.scope === 'system') {
+      if (roleId !== SYSTEM_ROLE_ID) {
+        return c.json({ error: 'Role not found' }, 404);
+      }
+
+      const usersData = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          email: users.email,
+          status: users.status,
+          lastLoginAt: users.lastLoginAt
+        })
+        .from(users)
+        .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+        .where(and(sql`${partnerUsers.userId} IS NULL`, sql`${organizationUsers.userId} IS NULL`));
+
+      return c.json({ data: usersData });
+    }
 
     // Verify role exists and is accessible
     const [role] = await db
@@ -1083,7 +1189,7 @@ roleRoutes.get(
             eq(partnerUsers.roleId, roleId)
           )
         );
-    } else {
+    } else if (scopeContext.scope === 'organization') {
       usersData = await db
         .select({
           id: users.id,
@@ -1100,6 +1206,8 @@ roleRoutes.get(
             eq(organizationUsers.roleId, roleId)
           )
         );
+    } else {
+      return c.json({ error: 'Role not found' }, 404);
     }
 
     return c.json({ data: usersData });
@@ -1112,8 +1220,21 @@ roleRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const roleId = c.req.param('id')!;
+
+    if (scopeContext.scope === 'system') {
+      if (roleId !== SYSTEM_ROLE_ID) {
+        return c.json({ error: 'Role not found' }, 404);
+      }
+
+      return c.json({
+        roleId: SYSTEM_ROLE_ID,
+        roleName: SYSTEM_ROLE_NAME,
+        inheritanceChain: [],
+        permissions: []
+      });
+    }
 
     // Get role
     const [role] = await db

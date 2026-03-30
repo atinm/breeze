@@ -51,7 +51,9 @@ cd e2e-tests
 npm test
 ```
 
-The admin account created by `db:seed` is `admin@breeze.local` / `BreezeAdmin123!`. The tests use this automatically.
+The partner admin account created by `db:seed` is `admin@breeze.local` / `BreezeAdmin123!`. The tests use this automatically.
+
+The seeded system admin account is `sysadmin@breeze.local` / `BreezeSystem123!`.
 
 Useful variations:
 

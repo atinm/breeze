@@ -5,9 +5,12 @@ import {
   ChevronRight,
   MapPin,
   Check,
-  Loader2
+  Loader2,
+  X
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth';
+import { getAuthScopeFromToken } from '@/lib/authScope';
 import { useOrgStore, type Organization, type Site } from '@/stores/orgStore';
 
 const statusColors: Record<string, string> = {
@@ -128,6 +131,8 @@ function OrgMenuItem({
 export default function OrgSwitcher() {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
 
   const {
     currentOrgId,
@@ -180,6 +185,7 @@ export default function OrgSwitcher() {
   // Get current selections
   const currentOrg = organizations.find((org) => org.id === currentOrgId);
   const currentSite = sites.find((site) => site.id === currentSiteId);
+  const canClearOrg = authScope === 'system' || authScope === 'partner';
 
   // Build display text
   const displayText = currentOrg
@@ -216,6 +222,20 @@ export default function OrgSwitcher() {
           <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
             Organizations
           </div>
+
+          {canClearOrg && currentOrgId ? (
+            <button
+              type="button"
+              onClick={() => {
+                setOrganization(null);
+                setIsOpen(false);
+              }}
+              className="mb-2 flex w-full items-center gap-2 rounded-md border border-dashed px-2 py-2 text-sm text-muted-foreground hover:bg-muted"
+            >
+              <X className="h-4 w-4" />
+              Use Partner Scope Only
+            </button>
+          ) : null}
 
           {organizations.length === 0 ? (
             <div className="px-2 py-4 text-center text-sm text-muted-foreground">

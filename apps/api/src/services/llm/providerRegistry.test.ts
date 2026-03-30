@@ -5,6 +5,7 @@ import { OpenAIProvider } from './providers/openaiProvider';
 import { LocalProvider } from './providers/localProvider';
 import { GeminiProvider } from './providers/geminiProvider';
 import { CopilotProvider } from './providers/copilotProvider';
+import { OllamaProvider } from './providers/ollamaProvider';
 
 describe('createLlmProvider', () => {
   it('returns ClaudeProvider for claude', () => {
@@ -30,5 +31,10 @@ describe('createLlmProvider', () => {
   it('returns CopilotProvider for copilot', () => {
     const provider = createLlmProvider('copilot');
     expect(provider).toBeInstanceOf(CopilotProvider);
+  });
+
+  it('returns OllamaProvider for ollama', () => {
+    const provider = createLlmProvider('ollama');
+    expect(provider).toBeInstanceOf(OllamaProvider);
   });
 });

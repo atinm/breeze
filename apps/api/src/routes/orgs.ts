@@ -7,6 +7,7 @@ import { partners, organizations, sites } from '../db/schema';
 import { authMiddleware, requireScope, requirePartner, type AuthContext } from '../middleware/auth';
 import { writeAuditEvent, writeRouteAudit } from '../services/auditEvents';
 import { getEffectiveOrgSettings, assertNotLocked } from '../services/effectiveSettings';
+import { getOrgEnrollmentSecret } from '../services/orgEnrollmentSecret';
 
 export const orgRoutes = new Hono();
 
@@ -565,7 +566,22 @@ orgRoutes.get('/organizations/:id', requireScope('partner', 'system'), async (c)
     return c.json({ error: 'Organization not found' }, 404);
   }
 
-  return c.json(organization);
+  const enrollmentSecret = await getOrgEnrollmentSecret(organization.id);
+  const settings = ((organization.settings as Record<string, unknown> | null) ?? {});
+  const defaults = ((settings.defaults as Record<string, unknown> | null) ?? {});
+
+  return c.json({
+    ...organization,
+    settings: {
+      ...settings,
+      defaults: {
+        ...defaults,
+        enrollmentSecret: typeof defaults.enrollmentSecret === 'string' && defaults.enrollmentSecret.trim().length > 0
+          ? defaults.enrollmentSecret
+          : enrollmentSecret ?? ''
+      }
+    }
+  });
 });
 
 orgRoutes.get('/organizations/:id/effective-settings',

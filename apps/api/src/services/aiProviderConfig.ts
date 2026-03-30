@@ -19,7 +19,7 @@ type SessionProviderSnapshot = {
   model?: string | null;
 };
 
-const VALID_PROVIDERS = new Set<AiProviderId>(['claude', 'openai', 'gemini', 'copilot', 'local']);
+const VALID_PROVIDERS = new Set<AiProviderId>(['claude', 'openai', 'gemini', 'copilot', 'local', 'ollama']);
 
 function normalizeProvider(value: string | undefined | null): AiProviderId | null {
   if (!value) return null;
@@ -71,22 +71,96 @@ async function getPartnerProviderConfig(
   return config ?? null;
 }
 
+async function getPartnerIdForOrg(orgId: string): Promise<string> {
+  const [org] = await db
+    .select({ partnerId: organizations.partnerId })
+    .from(organizations)
+    .where(eq(organizations.id, orgId))
+    .limit(1);
+
+  if (!org?.partnerId) {
+    throw new Error(`Organization '${orgId}' not found or has no partner`);
+  }
+
+  return org.partnerId;
+}
+
+async function getEnabledPartnerProviderConfig(
+  orgId: string,
+): Promise<{ provider: AiProviderId; config: PartnerProviderConfigRow } | null> {
+  const partnerId = await getPartnerIdForOrg(orgId);
+
+  const rows = await db
+    .select({
+      provider: aiProviderConfigs.provider,
+      enabled: aiProviderConfigs.enabled,
+      defaultModel: aiProviderConfigs.defaultModel,
+      allowedModels: aiProviderConfigs.allowedModels,
+      endpoint: aiProviderConfigs.endpoint,
+      apiKeyRef: aiProviderConfigs.apiKeyRef,
+      options: aiProviderConfigs.options,
+    })
+    .from(aiProviderConfigs)
+    .where(eq(aiProviderConfigs.partnerId, partnerId));
+
+  const enabled = rows.find((row) => row.enabled);
+  if (!enabled) return null;
+
+  return {
+    provider: enabled.provider as AiProviderId,
+    config: {
+      enabled: enabled.enabled,
+      defaultModel: enabled.defaultModel,
+      allowedModels: enabled.allowedModels,
+      endpoint: enabled.endpoint,
+      apiKeyRef: enabled.apiKeyRef,
+      options: enabled.options,
+    },
+  };
+}
+
 export async function resolveSessionProvider(
   orgId: string,
   session: SessionProviderSnapshot,
   requested?: ProviderRequest,
 ): Promise<{ provider: AiProviderId; providerModel: string }> {
-  const provider = requested?.provider ?? normalizeProvider(session.provider) ?? DEFAULT_PROVIDER;
+  const requestedProvider = requested?.provider;
+  const sessionProvider = normalizeProvider(session.provider);
   const requestedModel = requested?.providerModel ?? requested?.model;
   const fallbackModel = session.providerModel ?? session.model ?? DEFAULT_PROVIDER_MODEL;
+  let provider = requestedProvider ?? sessionProvider ?? DEFAULT_PROVIDER;
+  let config: PartnerProviderConfigRow | null = null;
 
-  const config = await getPartnerProviderConfig(orgId, provider);
+  if (!requestedProvider && !sessionProvider) {
+    const enabledDefault = await getEnabledPartnerProviderConfig(orgId);
+    if (enabledDefault) {
+      provider = enabledDefault.provider;
+      config = enabledDefault.config;
+    }
+  }
 
-  if (config && !config.enabled) {
+  if (!config) {
+    config = await getPartnerProviderConfig(orgId, provider);
+  }
+
+  if (!config) {
+    if (provider !== DEFAULT_PROVIDER) {
+      throw new Error(`AI provider '${provider}' is disabled for this partner`);
+    }
+
+    const providerModel = requestedModel ?? fallbackModel;
+    if (!providerModel) {
+      throw new Error(`No default model configured for provider '${provider}'`);
+    }
+
+    return { provider, providerModel };
+  }
+
+  if (!config.enabled) {
     throw new Error(`AI provider '${provider}' is disabled for this partner`);
   }
 
-  const providerModel = requestedModel ?? config?.defaultModel ?? fallbackModel;
+  const providerModel = requestedModel ?? config.defaultModel ?? fallbackModel;
   if (!providerModel) {
     throw new Error(`No default model configured for provider '${provider}'`);
   }

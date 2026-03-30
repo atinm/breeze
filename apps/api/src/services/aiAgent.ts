@@ -33,18 +33,33 @@ export async function createSession(
     title?: string;
     orgId?: string;
   }
-): Promise<{ id: string; orgId: string }> {
+): Promise<{ id: string; orgId: string; provider: AiProviderId; providerModel: string }> {
   const orgId = options.orgId ?? auth.orgId ?? auth.accessibleOrgIds?.[0] ?? null;
   if (!orgId) throw new Error('Organization context required');
   if (orgId !== auth.orgId && !auth.canAccessOrg(orgId)) {
     throw new Error('Access denied to this organization');
   }
 
+  console.log('[AI] Creating session', {
+    requestedOrgId: options.orgId ?? null,
+    resolvedOrgId: orgId,
+    authScope: auth.scope,
+    requestedProvider: options.provider ?? null,
+    requestedProviderModel: options.providerModel ?? options.model ?? null,
+    userId: auth.user.id,
+  });
+
   const providerSelection = await resolveSessionProvider(
     orgId,
     { provider: null, providerModel: null, model: DEFAULT_PROVIDER_MODEL },
     options,
   );
+
+  console.log('[AI] Session provider resolved', {
+    orgId,
+    provider: providerSelection.provider,
+    providerModel: providerSelection.providerModel,
+  });
 
   const [session] = await db
     .insert(aiSessions)
@@ -61,7 +76,12 @@ export async function createSession(
     .returning();
 
   if (!session) throw new Error('Failed to create session');
-  return { id: session.id, orgId };
+  return {
+    id: session.id,
+    orgId,
+    provider: providerSelection.provider,
+    providerModel: providerSelection.providerModel,
+  };
 }
 
 export async function getSession(sessionId: string, auth: AuthContext) {
@@ -440,6 +460,11 @@ const SAFE_ERROR_PATTERNS = [
   /access denied/i,
   /expired/i,
   /rate limit/i,
+  /quota exceeded/i,
+  /resource_exhausted/i,
+  /connection error/i,
+  /failed to fetch/i,
+  /econnrefused/i,
   /budget/i,
   /not active/i,
   /not online/i,
@@ -451,6 +476,8 @@ const SAFE_ERROR_PATTERNS = [
   /rejected/i,
   /disabled/i,
   /organization context required/i,
+  /not logged in/i,
+  /please run \/login/i,
 ];
 
 export function sanitizeErrorForClient(err: unknown): string {

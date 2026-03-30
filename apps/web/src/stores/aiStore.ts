@@ -11,6 +11,32 @@ import {
   type ActivePlan,
 } from './processStreamEvent';
 
+function consumeSseChunk(
+  chunk: string,
+  set: Parameters<typeof processStreamEvent>[1],
+  get: Parameters<typeof processStreamEvent>[2],
+  currentAssistantId: string | null
+): string | null {
+  if (!chunk.trim()) return currentAssistantId;
+
+  for (const rawLine of chunk.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr) continue;
+
+    try {
+      const event = JSON.parse(jsonStr) as AiStreamEvent;
+      currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
+    } catch (parseErr) {
+      console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
+    }
+  }
+
+  return currentAssistantId;
+}
+
 interface SearchResult {
   id: string;
   title: string | null;
@@ -21,6 +47,8 @@ interface SearchResult {
 interface AiState {
   isOpen: boolean;
   sessionId: string | null;
+  provider: string | null;
+  providerModel: string | null;
   messages: AiMessage[];
   isStreaming: boolean;
   isLoading: boolean;
@@ -67,6 +95,8 @@ export const useAiStore = create<AiState>()(
     (set, get) => ({
   isOpen: false,
   sessionId: null,
+  provider: null,
+  providerModel: null,
   messages: [],
   isStreaming: false,
   isLoading: false,
@@ -105,7 +135,15 @@ export const useAiStore = create<AiState>()(
         throw new Error(data.error || 'Failed to create session');
       }
       const data = await res.json();
-      set({ sessionId: data.id, messages: [], isLoading: false, isFlagged: false, flagReason: null });
+      set({
+        sessionId: data.id,
+        provider: typeof data.provider === 'string' ? data.provider : null,
+        providerModel: typeof data.providerModel === 'string' ? data.providerModel : null,
+        messages: [],
+        isLoading: false,
+        isFlagged: false,
+        flagReason: null
+      });
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : 'Failed to create session',
@@ -120,7 +158,7 @@ export const useAiStore = create<AiState>()(
       const res = await fetchWithAuth(`/ai/sessions/${sessionId}`);
       if (!res.ok) {
         if (res.status === 404) {
-          set({ sessionId: null, messages: [], isLoading: false });
+          set({ sessionId: null, provider: null, providerModel: null, messages: [], isLoading: false });
         } else {
           set({ error: 'Failed to load session', isLoading: false });
         }
@@ -128,7 +166,7 @@ export const useAiStore = create<AiState>()(
       }
       const data = await res.json();
       if (data.session?.status !== 'active') {
-        set({ sessionId: null, messages: [], isLoading: false });
+        set({ sessionId: null, provider: null, providerModel: null, messages: [], isLoading: false });
         return;
       }
 
@@ -136,6 +174,10 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        provider: typeof data.session?.provider === 'string' ? data.session.provider : null,
+        providerModel: typeof data.session?.providerModel === 'string'
+          ? data.session.providerModel
+          : (typeof data.session?.model === 'string' ? data.session.model : null),
         messages,
         isLoading: false,
         isFlagged: !!data.session.flaggedAt,
@@ -144,6 +186,8 @@ export const useAiStore = create<AiState>()(
     } catch (err) {
       set({
         sessionId: null,
+        provider: null,
+        providerModel: null,
         messages: [],
         error: err instanceof Error ? err.message : 'Failed to load session',
         isLoading: false
@@ -230,20 +274,11 @@ export const useAiStore = create<AiState>()(
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
+        currentAssistantId = consumeSseChunk(lines.join('\n'), set, get, currentAssistantId);
+      }
 
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            const jsonStr = line.slice(5).trim();
-            if (!jsonStr) continue;
-
-            try {
-              const event = JSON.parse(jsonStr) as AiStreamEvent;
-              currentAssistantId = processStreamEvent(event, set, get, currentAssistantId);
-            } catch (parseErr) {
-              console.error('[AI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
-            }
-          }
-        }
+      if (buffer.trim()) {
+        currentAssistantId = consumeSseChunk(buffer, set, get, currentAssistantId);
       }
     } catch (err) {
       set({
@@ -366,7 +401,7 @@ export const useAiStore = create<AiState>()(
         set({ error: 'Failed to close session' });
         return;
       }
-      set({ sessionId: null, messages: [] });
+      set({ sessionId: null, provider: null, providerModel: null, messages: [] });
     } catch (err) {
       console.error('[AI] Failed to close session:', err);
       set({ error: 'Failed to close session' });
@@ -426,6 +461,10 @@ export const useAiStore = create<AiState>()(
 
       set({
         sessionId,
+        provider: typeof data.session?.provider === 'string' ? data.session.provider : null,
+        providerModel: typeof data.session?.providerModel === 'string'
+          ? data.session.providerModel
+          : (typeof data.session?.model === 'string' ? data.session.model : null),
         messages,
         isLoading: false,
         isFlagged: !!data.session?.flaggedAt,

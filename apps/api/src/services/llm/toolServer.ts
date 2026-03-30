@@ -19,6 +19,10 @@ export type ToolDefinition<TShape extends z.ZodRawShape = z.ZodRawShape> = {
   handler: (args: any) => Promise<ToolResult> | ToolResult;
 };
 
+export type ToolDefinitionOptions = {
+  usageNotes?: string[];
+};
+
 export type ToolServerDefinition = {
   name: string;
   version?: string;
@@ -30,11 +34,13 @@ export function defineTool<TShape extends z.ZodRawShape>(
   description: string,
   inputSchema: TShape,
   handler: (args: z.infer<z.ZodObject<TShape>>) => Promise<ToolResult> | ToolResult,
+  options?: ToolDefinitionOptions,
 ): ToolDefinition<TShape> {
   const inputSchemaObject = z.object(inputSchema);
+  const enrichedDescription = buildToolDescription(description, inputSchemaObject, options);
   return {
     name,
-    description,
+    description: enrichedDescription,
     inputSchema,
     inputSchemaObject,
     inputJsonSchema: zodSchemaToJsonSchema(inputSchemaObject),
@@ -44,6 +50,17 @@ export function defineTool<TShape extends z.ZodRawShape>(
 
 export function createToolServer(definition: ToolServerDefinition): ToolServerDefinition {
   return definition;
+}
+
+export function filterToolServerByAllowedNames(
+  definition: ToolServerDefinition,
+  allowedNames: string[],
+): ToolServerDefinition {
+  const allowed = new Set(allowedNames);
+  return {
+    ...definition,
+    tools: definition.tools.filter((tool) => allowed.has(tool.name)),
+  };
 }
 
 function zodSchemaToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
@@ -123,6 +140,94 @@ function zodSchemaToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
   }
 
   return {};
+}
+
+function buildToolDescription(
+  description: string,
+  inputSchemaObject: z.ZodObject<z.ZodRawShape>,
+  options?: ToolDefinitionOptions,
+): string {
+  const sections: string[] = [description];
+  const parameterGuide = buildParameterGuide(inputSchemaObject);
+  if (parameterGuide) {
+    sections.push(`Parameters:\n${parameterGuide}`);
+  }
+
+  const usageNotes = buildUsageNotes(inputSchemaObject, options);
+  if (usageNotes.length > 0) {
+    sections.push(`Usage notes:\n${usageNotes.map((note) => `- ${note}`).join('\n')}`);
+  }
+
+  return sections.join('\n\n');
+}
+
+function buildParameterGuide(inputSchemaObject: z.ZodObject<z.ZodRawShape>): string {
+  const lines: string[] = [];
+
+  for (const [key, rawValue] of Object.entries(inputSchemaObject.shape)) {
+    const schema = rawValue as z.ZodTypeAny;
+    const unwrapped = unwrapZod(schema);
+    const optional = isOptionalSchema(schema);
+    const typeLabel = describeSchemaType(unwrapped);
+    const enumHint = unwrapped instanceof z.ZodEnum ? ` one of: ${unwrapped.options.join(', ')}` : '';
+    const identifierHint = buildIdentifierHint(key, unwrapped);
+    lines.push(`- ${key} (${optional ? 'optional' : 'required'} ${typeLabel})${enumHint}${identifierHint}`);
+  }
+
+  return lines.join('\n');
+}
+
+function describeSchemaType(schema: z.ZodTypeAny): string {
+  if (schema instanceof z.ZodString) return 'string';
+  if (schema instanceof z.ZodNumber) return 'number';
+  if (schema instanceof z.ZodBoolean) return 'boolean';
+  if (schema instanceof z.ZodArray) return `array of ${describeSchemaType(unwrapZod(schema.element))}`;
+  if (schema instanceof z.ZodEnum) return 'enum';
+  if (schema instanceof z.ZodLiteral) return typeof schema._def.value;
+  if (schema instanceof z.ZodObject) return 'object';
+  if (schema instanceof z.ZodRecord) return 'record';
+  if (schema instanceof z.ZodUnion) return 'union';
+  if (schema instanceof z.ZodNull) return 'null';
+  return 'value';
+}
+
+function buildIdentifierHint(key: string, schema: z.ZodTypeAny): string {
+  const looksLikeSingleId = key.endsWith('Id');
+  const looksLikeIdList = key.endsWith('Ids');
+
+  if (looksLikeSingleId && isUuidStringSchema(schema)) {
+    return ' - must be a real Breeze UUID returned by another tool; do not invent placeholder values';
+  }
+
+  if (looksLikeIdList && schema instanceof z.ZodArray && isUuidStringSchema(unwrapZod(schema.element))) {
+    return ' - each item must be a real Breeze UUID returned by another tool; do not invent placeholder values';
+  }
+
+  return '';
+}
+
+function isUuidStringSchema(schema: z.ZodTypeAny): boolean {
+  const unwrapped = unwrapZod(schema);
+  if (!(unwrapped instanceof z.ZodString)) return false;
+  const checks = (unwrapped._def as { checks?: Array<{ kind?: string; check?: string }> }).checks ?? [];
+  return checks.some((check) => check.kind === 'uuid' || check.check === 'string_format');
+}
+
+function buildUsageNotes(
+  inputSchemaObject: z.ZodObject<z.ZodRawShape>,
+  options?: ToolDefinitionOptions,
+): string[] {
+  const notes = [...(options?.usageNotes ?? [])];
+  const shape = inputSchemaObject.shape;
+
+  if ('deviceId' in shape || 'deviceIds' in shape) {
+    notes.unshift(
+      'If you do not already know the real Breeze device UUID, call query_devices first to resolve it.',
+      'Do not use hostnames, labels, placeholder IDs, or words like "required" in deviceId/deviceIds fields.',
+    );
+  }
+
+  return Array.from(new Set(notes));
 }
 
 function unwrapZod(schema: z.ZodTypeAny): z.ZodTypeAny {

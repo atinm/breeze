@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Building2, Plus, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
-import { RefreshCw } from 'lucide-react';
 import SystemAdminGuard from '../auth/SystemAdminGuard';
+import PartnerCombobox from '../shared/PartnerCombobox';
 
 type PartnerType = 'msp' | 'enterprise' | 'internal';
 
@@ -36,6 +37,8 @@ type FormState = {
   maxOrganizations: string;
   settingsJson: string;
 };
+
+type ViewMode = 'empty' | 'create' | 'details';
 
 const EMPTY_FORM: FormState = {
   name: '',
@@ -84,6 +87,8 @@ function slugify(value: string): string {
 export default function PartnerAdminPage() {
   const [partners, setPartners] = useState<PartnerRecord[]>([]);
   const [selectedPartnerId, setSelectedPartnerId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [viewMode, setViewMode] = useState<ViewMode>('empty');
   const [createForm, setCreateForm] = useState<FormState>(EMPTY_FORM);
   const [editForm, setEditForm] = useState<FormState>(EMPTY_FORM);
   const [isLoading, setIsLoading] = useState(true);
@@ -97,6 +102,16 @@ export default function PartnerAdminPage() {
     () => partners.find((partner) => partner.id === selectedPartnerId) ?? null,
     [partners, selectedPartnerId],
   );
+
+  const filteredPartners = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return partners;
+    return partners.filter((partner) =>
+      partner.name.toLowerCase().includes(query)
+      || partner.slug.toLowerCase().includes(query)
+      || partner.type.toLowerCase().includes(query),
+    );
+  }, [partners, searchQuery]);
 
   const loadPartners = useCallback(async () => {
     try {
@@ -112,17 +127,10 @@ export default function PartnerAdminPage() {
       const data = body.data ?? [];
       setPartners(data);
 
-      if (data.length === 0) {
+      if (selectedPartnerId && !data.some((partner) => partner.id === selectedPartnerId)) {
         setSelectedPartnerId(null);
         setEditForm(EMPTY_FORM);
-        return;
-      }
-
-      const current = selectedPartnerId && data.find((partner) => partner.id === selectedPartnerId);
-      const nextSelected = current ?? data[0];
-      if (nextSelected) {
-        setSelectedPartnerId(nextSelected.id);
-        setEditForm(toForm(nextSelected));
+        setViewMode('empty');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load partners');
@@ -138,7 +146,31 @@ export default function PartnerAdminPage() {
   useEffect(() => {
     if (!selectedPartner) return;
     setEditForm(toForm(selectedPartner));
+    setViewMode('details');
   }, [selectedPartner]);
+
+  const handleSelectPartner = (partnerId: string | null) => {
+    if (!partnerId) {
+      setSelectedPartnerId(null);
+      setNotice(null);
+      setError(null);
+      setViewMode('empty');
+      return;
+    }
+
+    setSelectedPartnerId(partnerId);
+    setNotice(null);
+    setError(null);
+    setViewMode('details');
+  };
+
+  const handleStartCreate = () => {
+    setSelectedPartnerId(null);
+    setCreateForm(EMPTY_FORM);
+    setNotice(null);
+    setError(null);
+    setViewMode('create');
+  };
 
   const handleCreate = async () => {
     setError(null);
@@ -273,6 +305,8 @@ export default function PartnerAdminPage() {
 
       setNotice(`Partner "${selectedPartner.name}" deleted.`);
       setSelectedPartnerId(null);
+      setEditForm(EMPTY_FORM);
+      setViewMode('empty');
       await loadPartners();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete partner');
@@ -284,120 +318,171 @@ export default function PartnerAdminPage() {
   return (
     <SystemAdminGuard>
       <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Partner Administration</h1>
-          <p className="text-sm text-muted-foreground">
-            System-admin controls for creating partners and editing partner-level settings.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={() => void loadPartners()}
-          disabled={isLoading}
-          className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
-        >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
-      </div>
-
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-
-      {notice && (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
-          {notice}
-        </div>
-      )}
-
-      <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_1fr]">
-        <section className="rounded-lg border bg-card p-4">
-          <h2 className="text-sm font-semibold">Partners</h2>
-          <p className="mt-1 text-xs text-muted-foreground">Select a partner to edit settings.</p>
-
-          <div className="mt-3 max-h-[420px] space-y-2 overflow-y-auto pr-1">
-            {partners.map((partner) => {
-              const active = partner.id === selectedPartnerId;
-              return (
-                <button
-                  key={partner.id}
-                  type="button"
-                  onClick={() => setSelectedPartnerId(partner.id)}
-                  className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
-                    active
-                      ? 'border-primary bg-primary/10 text-foreground'
-                      : 'border-border hover:bg-muted'
-                  }`}
-                >
-                  <div className="font-medium">{partner.name}</div>
-                  <div className="text-xs text-muted-foreground">{partner.slug} · {partner.type}</div>
-                </button>
-              );
-            })}
-
-            {!isLoading && partners.length === 0 && (
-              <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
-                No partners found.
-              </p>
-            )}
+        <div className="flex flex-col gap-3 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Partners</h1>
+            <p className="text-sm text-muted-foreground">
+              Create, inspect, update, and delete partner records.
+            </p>
           </div>
-        </section>
 
-        <div className="space-y-6">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+              Selected Partner
+              <PartnerCombobox
+                partners={partners}
+                selectedPartnerId={selectedPartnerId}
+                onSelect={handleSelectPartner}
+                placeholder="Type to find a partner"
+                title="Selected Partner"
+                className="sm:min-w-[280px]"
+              />
+            </label>
+
+            <div className="flex items-center gap-2 self-start sm:self-end">
+              <button
+                type="button"
+                onClick={handleStartCreate}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:opacity-90"
+              >
+                <Plus className="h-4 w-4" />
+                Create Partner
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadPartners()}
+                disabled={isLoading}
+                className="inline-flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-60"
+              >
+                <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {error ? (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {notice ? (
+          <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+            {notice}
+          </div>
+        ) : null}
+
+        <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
           <section className="rounded-lg border bg-card p-4">
-            <h2 className="text-sm font-semibold">Create Partner</h2>
-            <p className="mt-1 text-xs text-muted-foreground">Creates a new partner record via `/partners`.</p>
-            <PartnerForm
-              form={createForm}
-              onChange={setCreateForm}
-              onSubmit={() => void handleCreate()}
-              submitLabel={isCreating ? 'Creating...' : 'Create Partner'}
-              disabled={isCreating}
-            />
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search partners by name, slug, or type"
+                className="h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground"
+              />
+            </div>
+
+            <div className="mt-4 max-h-[520px] space-y-2 overflow-y-auto pr-1">
+              {filteredPartners.map((partner) => {
+                const active = partner.id === selectedPartnerId && viewMode === 'details';
+                return (
+                  <button
+                    key={partner.id}
+                    type="button"
+                    onClick={() => handleSelectPartner(partner.id)}
+                    className={`w-full rounded-md border px-3 py-3 text-left text-sm transition ${
+                      active
+                        ? 'border-primary bg-primary/10 text-foreground'
+                        : 'border-border hover:bg-muted'
+                    }`}
+                  >
+                    <div className="font-medium">{partner.name}</div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {partner.slug} · {partner.type} · {partner.status}
+                    </div>
+                  </button>
+                );
+              })}
+
+              {!isLoading && filteredPartners.length === 0 ? (
+                <p className="rounded-md border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
+                  {partners.length === 0 ? 'No partners found.' : 'No partners match your search.'}
+                </p>
+              ) : null}
+            </div>
           </section>
 
-          <section className="rounded-lg border bg-card p-4">
-            <h2 className="text-sm font-semibold">Partner Settings</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Updates and deletes the selected partner via `/partners/:id`.
-            </p>
-
-            {selectedPartner ? (
+          <section className="rounded-lg border bg-card p-5">
+            {viewMode === 'create' ? (
               <>
+                <h2 className="text-sm font-semibold">Create Partner</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Fill out the new partner record. The form starts empty by design.
+                </p>
+                <PartnerForm
+                  form={createForm}
+                  onChange={setCreateForm}
+                  onSubmit={() => void handleCreate()}
+                  submitLabel={isCreating ? 'Creating...' : 'Create Partner'}
+                  disabled={isCreating}
+                />
+              </>
+            ) : null}
+
+            {viewMode === 'details' && selectedPartner ? (
+              <>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold">{selectedPartner.name}</h2>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {selectedPartner.slug} · {selectedPartner.type} · {selectedPartner.status}
+                    </p>
+                  </div>
+                  <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                    Plan: {selectedPartner.plan}
+                  </div>
+                </div>
+
                 <PartnerForm
                   form={editForm}
                   onChange={setEditForm}
                   onSubmit={() => void handleSave()}
-                  submitLabel={isSaving ? 'Saving...' : 'Save Partner Settings'}
+                  submitLabel={isSaving ? 'Saving...' : 'Save Partner'}
                   disabled={isSaving || isDeleting}
                 />
+
                 <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/5 p-4">
-                  <h3 className="text-sm font-semibold text-destructive">Danger Zone</h3>
+                  <h3 className="text-sm font-semibold text-destructive">Delete Partner</h3>
                   <p className="mt-1 text-xs text-destructive/90">
-                    Soft delete only. This hides the partner from active lists and can be reversed by a system admin.
+                    Soft delete only. This hides the partner from active lists and can be reversed later.
                   </p>
                   <button
                     type="button"
                     onClick={() => void handleDelete()}
                     disabled={isSaving || isDeleting}
-                    className="mt-3 inline-flex h-9 items-center rounded-md border border-destructive/40 bg-destructive/10 px-3 text-sm font-medium text-destructive hover:bg-destructive/20 disabled:opacity-60"
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 text-sm font-medium text-destructive hover:bg-destructive/20 disabled:opacity-60"
                   >
+                    <Trash2 className="h-4 w-4" />
                     {isDeleting ? 'Deleting...' : 'Delete Partner'}
                   </button>
                 </div>
               </>
-            ) : (
-              <p className="mt-3 rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                Select a partner from the left list.
-              </p>
-            )}
+            ) : null}
+
+            {viewMode === 'empty' ? (
+              <div className="flex min-h-[420px] flex-col items-center justify-center rounded-md border border-dashed px-6 text-center">
+                <Building2 className="h-10 w-10 text-muted-foreground" />
+                <h2 className="mt-4 text-lg font-semibold">Select a partner</h2>
+                <p className="mt-2 max-w-md text-sm text-muted-foreground">
+                  Choose a partner from the list to view details and update or delete it, or use Create Partner to start a new record.
+                </p>
+              </div>
+            ) : null}
           </section>
         </div>
-      </div>
       </div>
     </SystemAdminGuard>
   );
@@ -413,7 +498,7 @@ type PartnerFormProps = {
 
 function PartnerForm({ form, onChange, onSubmit, submitLabel, disabled }: PartnerFormProps) {
   return (
-    <div className="mt-3 space-y-3">
+    <div className="mt-4 space-y-3">
       <div className="grid gap-3 md:grid-cols-2">
         <label className="space-y-1 text-xs font-medium text-muted-foreground">
           Name

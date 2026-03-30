@@ -38,7 +38,7 @@ function parseEnvCents(name: string): number | null {
 }
 
 function getProviderDefaultPricing(provider: AiProviderId): { inputPerMillion: number; outputPerMillion: number } {
-  if (provider !== 'local') {
+  if (provider !== 'local' && provider !== 'ollama') {
     return DEFAULT_PRICING;
   }
 
@@ -80,6 +80,7 @@ export function resolveRecordedCostCents(
 
 async function getLocalPricingForOrg(
   orgId: string,
+  provider: 'local' | 'ollama',
 ): Promise<{ inputPerMillion: number; outputPerMillion: number } | null> {
   const [org] = await db
     .select({ partnerId: organizations.partnerId })
@@ -92,7 +93,7 @@ async function getLocalPricingForOrg(
   const [config] = await db
     .select({ options: aiProviderConfigs.options })
     .from(aiProviderConfigs)
-    .where(and(eq(aiProviderConfigs.partnerId, org.partnerId), eq(aiProviderConfigs.provider, 'local')))
+    .where(and(eq(aiProviderConfigs.partnerId, org.partnerId), eq(aiProviderConfigs.provider, provider)))
     .limit(1);
 
   if (!config) return null;
@@ -287,8 +288,8 @@ export async function recordUsageFromSdkResult(
   const provider = pricingContext?.provider ?? 'claude';
   const model = pricingContext?.model ?? 'claude-sonnet-4-5-20250929';
   let costCents = resolveRecordedCostCents(result, provider, model);
-  if (result.total_cost_usd <= 0 && provider === 'local') {
-    const localPricing = await getLocalPricingForOrg(orgId);
+  if (result.total_cost_usd <= 0 && (provider === 'local' || provider === 'ollama')) {
+    const localPricing = await getLocalPricingForOrg(orgId, provider);
     if (localPricing) {
       const inputCost = (result.usage.input_tokens / 1_000_000) * localPricing.inputPerMillion;
       const outputCost = (result.usage.output_tokens / 1_000_000) * localPricing.outputPerMillion;

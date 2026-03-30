@@ -17,6 +17,10 @@ type JsonRpcResponse = {
   error?: { code: number; message: string };
 };
 
+function hasJsonRpcId(req: JsonRpcRequest): req is JsonRpcRequest & { id: string | number } {
+  return typeof req.id === 'string' || typeof req.id === 'number';
+}
+
 const transportSessions = new Map<string, {
   queue: JsonRpcResponse[];
   sessionId: string;
@@ -30,13 +34,37 @@ export const sessionMcpServerRoutes = new Hono();
 
 async function authenticate(c: any): Promise<{ sessionId: string; serverName: string } | null> {
   const header = c.req.header('authorization') || c.req.header('Authorization');
-  if (!header?.startsWith('Bearer ')) return null;
-  return verifyMcpSessionToken(header.slice('Bearer '.length).trim());
+  if (!header?.startsWith('Bearer ')) {
+    console.warn('[SessionMcp] Missing bearer token', {
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      userAgent: c.req.header('user-agent') ?? null,
+    });
+    return null;
+  }
+
+  const verified = await verifyMcpSessionToken(header.slice('Bearer '.length).trim());
+  if (!verified) {
+    console.warn('[SessionMcp] Invalid session token', {
+      method: c.req.method,
+      path: new URL(c.req.url).pathname,
+      userAgent: c.req.header('user-agent') ?? null,
+    });
+    return null;
+  }
+
+  return verified;
 }
 
 sessionMcpServerRoutes.get('/sse', async (c) => {
   const auth = await authenticate(c);
   if (!auth) return c.json({ error: 'Unauthorized' }, 401);
+
+  console.log('[SessionMcp] SSE session opened', {
+    sessionId: auth.sessionId,
+    serverName: auth.serverName,
+    userAgent: c.req.header('user-agent') ?? null,
+  });
 
   cleanupTransportSessions();
 
@@ -57,15 +85,12 @@ sessionMcpServerRoutes.get('/sse', async (c) => {
     const cleanup = () => {
       alive = false;
       transportSessions.delete(transportId);
+      console.log('[SessionMcp] SSE session closed', {
+        sessionId: auth.sessionId,
+        serverName: auth.serverName,
+        transportId,
+      });
     };
-
-    const keepalive = setInterval(async () => {
-      try {
-        await stream.writeSSE({ event: 'ping', data: '' });
-      } catch {
-        cleanup();
-      }
-    }, 30_000);
 
     try {
       while (alive) {
@@ -80,7 +105,6 @@ sessionMcpServerRoutes.get('/sse', async (c) => {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     } finally {
-      clearInterval(keepalive);
       cleanup();
     }
   });
@@ -95,6 +119,12 @@ sessionMcpServerRoutes.post('/message', async (c) => {
 
   const transport = transportSessions.get(transportId);
   if (!transport || transport.sessionId !== auth.sessionId || transport.serverName !== auth.serverName) {
+    console.warn('[SessionMcp] Unknown transport session', {
+      sessionId: auth.sessionId,
+      serverName: auth.serverName,
+      transportId,
+      found: Boolean(transport),
+    });
     return c.json({ error: 'Unknown transport session' }, 404);
   }
 
@@ -106,7 +136,16 @@ sessionMcpServerRoutes.post('/message', async (c) => {
   }
 
   const response = await handleJsonRpc(body, auth.sessionId, auth.serverName);
-  transport.queue.push(response);
+  console.log('[SessionMcp] JSON-RPC request handled', {
+    sessionId: auth.sessionId,
+    serverName: auth.serverName,
+    method: body.method,
+    hasError: Boolean(response?.error),
+    hasResponse: Boolean(response),
+  });
+  if (response) {
+    transport.queue.push(response);
+  }
   return c.json({ status: 'accepted' }, 202);
 });
 
@@ -114,18 +153,25 @@ async function handleJsonRpc(
   req: JsonRpcRequest,
   sessionId: string,
   serverName: string,
-): Promise<JsonRpcResponse> {
+): Promise<JsonRpcResponse | null> {
   const session = streamingSessionManager.get(sessionId);
   const toolServer = session?.mcpServer;
 
   if (!session || !toolServer || toolServer.name !== serverName) {
+    console.warn('[SessionMcp] Tool server unavailable', {
+      sessionId,
+      serverName,
+      hasSession: Boolean(session),
+      hasToolServer: Boolean(toolServer),
+      toolServerName: toolServer?.name ?? null,
+    });
     return jsonRpcError(req.id, -32000, 'Session MCP server is unavailable');
   }
 
   try {
     switch (req.method) {
       case 'initialize':
-        return jsonRpcResult(req.id, {
+        return jsonRpcResult(hasJsonRpcId(req) ? req.id : null, {
           protocolVersion: '2024-11-05',
           capabilities: { tools: { listChanged: false } },
           serverInfo: {
@@ -134,9 +180,9 @@ async function handleJsonRpc(
           },
         });
       case 'notifications/initialized':
-        return jsonRpcResult(req.id, {});
+        return null;
       case 'tools/list':
-        return jsonRpcResult(req.id, {
+        return jsonRpcResult(hasJsonRpcId(req) ? req.id : null, {
           tools: toolServer.tools.map((tool) => ({
             name: tool.name,
             description: tool.description,
@@ -144,18 +190,18 @@ async function handleJsonRpc(
           })),
         });
       case 'tools/call':
-        return handleToolsCall(req.id, req.params ?? {}, toolServer);
+        return handleToolsCall(hasJsonRpcId(req) ? req.id : null, req.params ?? {}, toolServer);
       default:
-        return jsonRpcError(req.id, -32601, `Method not found: ${req.method}`);
+        return jsonRpcError(hasJsonRpcId(req) ? req.id : null, -32601, `Method not found: ${req.method}`);
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Internal error';
-    return jsonRpcError(req.id, -32000, message);
+    return jsonRpcError(hasJsonRpcId(req) ? req.id : null, -32000, message);
   }
 }
 
 async function handleToolsCall(
-  id: string | number,
+  id: string | number | null,
   params: Record<string, unknown>,
   toolServer: NonNullable<ReturnType<typeof streamingSessionManager.get>>['mcpServer'],
 ): Promise<JsonRpcResponse> {
@@ -173,6 +219,10 @@ async function handleToolsCall(
   }
 
   const result = await tool.handler(parsed.data);
+  console.log('[SessionMcp] Tool call succeeded', {
+    serverName: toolServer.name,
+    toolName,
+  });
   return jsonRpcResult(id, result);
 }
 

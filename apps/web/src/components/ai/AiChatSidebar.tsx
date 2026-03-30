@@ -22,6 +22,8 @@ export default function AiChatSidebar() {
     approvalMode,
     isPaused,
     sessionId,
+    provider,
+    providerModel,
     showHistory,
     sessions,
     searchResults,
@@ -93,6 +95,8 @@ export default function AiChatSidebar() {
     await createSession();
   }, [closeSession, createSession]);
 
+  const modelLabel = providerModel ?? provider;
+
   return (
     <>
       {/* Sidebar panel */}
@@ -114,9 +118,16 @@ export default function AiChatSidebar() {
             ) : (
               <MessageSquare className="h-4 w-4 text-primary" />
             )}
-            <span className="text-sm font-semibold text-foreground">
-              {showHistory ? 'History' : 'Breeze AI'}
-            </span>
+            <div className="min-w-0">
+              <span className="block text-sm font-semibold text-foreground">
+                {showHistory ? 'History' : 'Breeze AI'}
+              </span>
+              {!showHistory && sessionId && modelLabel ? (
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                  {modelLabel}
+                </span>
+              ) : null}
+            </div>
           </div>
 
           <div className="flex items-center gap-1">

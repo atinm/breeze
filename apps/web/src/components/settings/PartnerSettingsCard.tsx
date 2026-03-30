@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Building2 } from 'lucide-react';
 import { useOrgStore } from '../../stores/orgStore';
+import { useAuthStore } from '../../stores/auth';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 
 export default function PartnerSettingsCard() {
   const { currentPartnerId, isLoading } = useOrgStore();
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -11,7 +15,9 @@ export default function PartnerSettingsCard() {
   }, []);
 
   // Don't render anything until we know the scope
-  if (!mounted || isLoading || !currentPartnerId) {
+  const canOpenPartnerSettings = authScope === 'partner' || Boolean(currentPartnerId);
+
+  if (!mounted || isLoading || !canOpenPartnerSettings) {
     return null;
   }
 

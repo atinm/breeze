@@ -5,6 +5,7 @@ type DefaultsData = {
   policyDefaults?: Record<string, string>;
   deviceGroup?: string;
   alertThreshold?: string;
+  enrollmentSecret?: string;
   autoEnrollment?: {
     enabled: boolean;
     requireApproval: boolean;
@@ -29,6 +30,7 @@ const defaultValues: DefaultsData = {
   },
   deviceGroup: 'All Managed Devices',
   alertThreshold: 'high',
+  enrollmentSecret: '',
   autoEnrollment: {
     enabled: true,
     requireApproval: false,
@@ -52,11 +54,28 @@ const alertThresholds = [
   { value: 'medium', label: 'Medium and above' }
 ];
 
+function generateEnrollmentSecret(length = 32) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const randomValues = new Uint32Array(length);
+
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(randomValues);
+  } else {
+    for (let i = 0; i < length; i += 1) {
+      randomValues[i] = Math.floor(Math.random() * chars.length);
+    }
+  }
+
+  return Array.from(randomValues, (value) => chars[value % chars.length]).join('');
+}
+
 export default function OrgDefaultsEditor({ organizationName, defaults, onDirty, onSave }: OrgDefaultsEditorProps) {
   const initialData = { ...defaultValues, ...defaults };
   const [policyDefaults, setPolicyDefaults] = useState(initialData.policyDefaults || defaultValues.policyDefaults!);
   const [deviceGroup, setDeviceGroup] = useState(initialData.deviceGroup || defaultValues.deviceGroup!);
   const [alertThreshold, setAlertThreshold] = useState(initialData.alertThreshold || defaultValues.alertThreshold!);
+  const [enrollmentSecret, setEnrollmentSecret] = useState(initialData.enrollmentSecret || defaultValues.enrollmentSecret!);
+  const [showEnrollmentSecret, setShowEnrollmentSecret] = useState(false);
   const [autoEnrollment, setAutoEnrollment] = useState(initialData.autoEnrollment || defaultValues.autoEnrollment!);
   const [agentUpdatePolicy, setAgentUpdatePolicy] = useState(initialData.agentUpdatePolicy || defaultValues.agentUpdatePolicy!);
   const [maintenanceWindow, setMaintenanceWindow] = useState(initialData.maintenanceWindow || defaultValues.maintenanceWindow!);
@@ -70,11 +89,17 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
       policyDefaults,
       deviceGroup,
       alertThreshold,
+      enrollmentSecret,
       autoEnrollment,
       agentUpdatePolicy,
       maintenanceWindow
     };
     onSave?.(data);
+  };
+
+  const handleGenerateEnrollmentSecret = () => {
+    setEnrollmentSecret(generateEnrollmentSecret());
+    markDirty();
   };
 
   return (
@@ -182,6 +207,43 @@ export default function OrgDefaultsEditor({ organizationName, defaults, onDirty,
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-sm font-medium">Enrollment secret</label>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEnrollmentSecret((current) => !current)}
+                  className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition hover:bg-background"
+                >
+                  {showEnrollmentSecret ? 'Hide' : 'Show'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleGenerateEnrollmentSecret}
+                  className="inline-flex items-center rounded-md border px-3 py-1.5 text-xs font-medium transition hover:bg-background"
+                >
+                  Generate
+                </button>
+              </div>
+            </div>
+            <input
+              type={showEnrollmentSecret ? 'text' : 'password'}
+              value={enrollmentSecret}
+              onChange={event => {
+                setEnrollmentSecret(event.target.value);
+                markDirty();
+              }}
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+              placeholder="Optional secret required during agent enrollment"
+            />
+            <p className="text-xs text-muted-foreground">
+              This organization-specific secret is shown alongside onboarding commands and must be supplied during new agent enrollment.
+            </p>
+          </div>
+        </div>
+
         <div className="space-y-4 rounded-lg border bg-muted/40 p-4">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Sparkles className="h-4 w-4" />

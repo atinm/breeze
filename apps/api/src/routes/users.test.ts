@@ -51,7 +51,8 @@ vi.mock('../db/schema', () => ({
   partnerUsers: {},
   organizationUsers: {},
   roles: {},
-  organizations: {}
+  organizations: {},
+  sessions: {}
 }));
 
 vi.mock('../middleware/auth', () => ({
@@ -60,6 +61,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'partner',
       partnerId: 'partner-123',
       orgId: null,
+      canAccessOrg: () => true,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -87,6 +89,7 @@ describe('user routes', () => {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
+        canAccessOrg: () => true,
         user: { id: 'user-123', email: 'test@example.com' }
       });
       return next();
@@ -131,16 +134,35 @@ describe('user routes', () => {
       expect(body.data[0].email).toBe('user@example.com');
     });
 
-    it('should reject missing partner/org context', async () => {
+    it('should allow system scope with no tenant context', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
+          canAccessOrg: () => true,
           user: { id: 'user-123', email: 'test@example.com' }
         });
         return next();
       });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-1111-1111-111111111111',
+                  email: 'sysadmin@breeze.local',
+                  name: 'Breeze System Admin',
+                  status: 'active',
+                  lastLoginAt: null,
+                }
+              ])
+            })
+          })
+        })
+      } as any);
 
       const res = await app.request('/users', {
         method: 'GET',
@@ -149,8 +171,101 @@ describe('user routes', () => {
         }
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].email).toBe('sysadmin@breeze.local');
     });
+
+    it('should allow system scope when orgId query is provided', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-1111-1111-111111111111',
+                  email: 'orguser@example.com',
+                  name: 'Org User',
+                  status: 'active',
+                  roleId: 'role-1',
+                  roleName: 'Org Admin',
+                  siteIds: [],
+                  deviceGroupIds: []
+                }
+              ])
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users?orgId=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].email).toBe('orguser@example.com');
+    });
+
+    it('should allow system scope when partnerId query is provided', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  id: '11111111-1111-1111-1111-111111111111',
+                  email: 'partneruser@example.com',
+                  name: 'Partner User',
+                  status: 'active',
+                  roleId: 'role-1',
+                  roleName: 'Partner Admin',
+                  orgAccess: 'all',
+                  orgIds: []
+                }
+              ])
+            })
+          })
+        })
+      } as any);
+
+      const res = await app.request('/users?partnerId=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token'
+        }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].email).toBe('partneruser@example.com');
+    });
+
   });
 
   describe('POST /users/invite', () => {
@@ -248,6 +363,61 @@ describe('user routes', () => {
       const body = await res.json();
       expect(body.error).toContain('orgIds');
     });
+
+    it('should invite a system-scope admin when called by a system admin', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'system-user-1', email: 'sysadmin@breeze.local' }
+        });
+        return next();
+      });
+
+      const txSelect = vi
+        .fn()
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([])
+            })
+          })
+        });
+
+      const txInsert = vi.fn().mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([
+            {
+              id: 'system-user-2',
+              email: 'new-sysadmin@example.com',
+              name: 'New System Admin',
+              status: 'invited'
+            }
+          ])
+        })
+      });
+
+      vi.mocked(db.transaction).mockImplementation(async (fn) => {
+        return fn({ select: txSelect, insert: txInsert } as any);
+      });
+
+      const res = await app.request('/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'new-sysadmin@example.com',
+          name: 'New System Admin',
+          roleId: 'system-admin'
+        })
+      });
+
+      expect(res.status).toBe(201);
+      const body = await res.json();
+      expect(body.email).toBe('new-sysadmin@example.com');
+      expect(body.status).toBe('invited');
+    });
   });
 
   describe('POST /users/resend-invite', () => {
@@ -328,6 +498,84 @@ describe('user routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.success).toBe(true);
+    });
+  });
+
+  describe('DELETE /users/:id', () => {
+    it('should delete a system-scope admin when called by another system admin', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'system-user-1', email: 'sysadmin@breeze.local' }
+        });
+        return next();
+      });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: 'system-user-2',
+                    email: 'other-sysadmin@example.com',
+                    name: 'Other System Admin',
+                    status: 'active',
+                    roleId: 'system-admin',
+                    roleName: 'System Admin'
+                  }
+                ])
+              })
+            })
+          })
+        })
+      } as any);
+
+      const deleteWhere = vi
+        .fn()
+        .mockReturnValueOnce(Promise.resolve([]))
+        .mockReturnValueOnce({
+          returning: vi.fn().mockResolvedValue([{ id: 'system-user-2' }])
+        });
+
+      vi.mocked(db.delete).mockReturnValue({
+        where: deleteWhere
+      } as any);
+
+      const res = await app.request('/users/system-user-2', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.success).toBe(true);
+    });
+
+    it('should reject self-deletion for system-scope admins', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'system-user-1', email: 'sysadmin@breeze.local' }
+        });
+        return next();
+      });
+
+      const res = await app.request('/users/system-user-1', {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('cannot remove your own');
     });
   });
 });

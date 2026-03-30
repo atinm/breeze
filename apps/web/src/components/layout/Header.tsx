@@ -12,6 +12,7 @@ import {
   Sparkles,
   Menu
 } from 'lucide-react';
+import PartnerSwitcher from './PartnerSwitcher';
 import OrgSwitcher from './OrgSwitcher';
 import NotificationCenter from './NotificationCenter';
 import CommandPalette from './CommandPalette';
@@ -26,16 +27,30 @@ export default function Header() {
   const [darkMode, setDarkMode] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [currentPath, setCurrentPath] = useState<string>(() =>
+    typeof window === 'undefined' ? '/' : window.location.pathname
+  );
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const { user, isAuthenticated } = useAuthStore();
   const { isOpen: isAiOpen, toggle: toggleAi } = useAiStore();
   const { toggleMobileMenu } = useUiStore();
+  const hideOrgSwitcher = currentPath === '/settings/ai-providers';
 
   // Mark as mounted after hydration to avoid SSR/client mismatch
   useEffect(() => {
     setMounted(true);
     setDarkMode(document.documentElement.classList.contains('dark'));
+  }, []);
+
+  useEffect(() => {
+    const syncPath = () => setCurrentPath(window.location.pathname);
+    document.addEventListener('astro:after-swap', syncPath);
+    window.addEventListener('popstate', syncPath);
+    return () => {
+      document.removeEventListener('astro:after-swap', syncPath);
+      window.removeEventListener('popstate', syncPath);
+    };
   }, []);
 
   // Close dropdown when clicking outside
@@ -98,9 +113,13 @@ export default function Header() {
         </button>
 
         {/* Organization Switcher */}
-        <div data-tour="org-switcher">
-          <OrgSwitcher />
-        </div>
+        <PartnerSwitcher />
+
+        {!hideOrgSwitcher ? (
+          <div data-tour="org-switcher">
+            <OrgSwitcher />
+          </div>
+        ) : null}
 
         {/* Global Search */}
         <div data-tour="search">

@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import { and, eq, or } from 'drizzle-orm';
+import { and, eq, isNull, or } from 'drizzle-orm';
 import { HTTPException } from 'hono/http-exception';
 import { nanoid } from 'nanoid';
 import { db } from '../db';
-import { users, partnerUsers, organizationUsers, roles, organizations } from '../db/schema';
+import { users, partnerUsers, organizationUsers, roles, organizations, sessions } from '../db/schema';
 import { authMiddleware, requirePermission } from '../middleware/auth';
 import { PERMISSIONS } from '../services/permissions';
 import { createAuditLogAsync } from '../services/auditService';
@@ -50,7 +50,7 @@ userRoutes.use('*', async (c, next) => {
 const inviteUserSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1).max(255),
-  roleId: z.string().uuid(),
+  roleId: z.string().min(1),
   orgAccess: z.enum(['all', 'selected', 'none']).optional(),
   orgIds: z.array(z.string().uuid()).optional(),
   siteIds: z.array(z.string().uuid()).optional(),
@@ -70,11 +70,35 @@ const assignRoleSchema = z.object({
   roleId: z.string().uuid()
 });
 
+const SYSTEM_ROLE_ID = 'system-admin';
+const SYSTEM_ROLE_NAME = 'System Admin';
+const SYSTEM_ROLE_DESCRIPTION = 'Full administrative access across all partners and organizations.';
+
 type ScopeContext =
+  | { scope: 'system' }
   | { scope: 'partner'; partnerId: string }
   | { scope: 'organization'; orgId: string };
 
-function getScopeContext(auth: { scope: string; partnerId: string | null; orgId: string | null }): ScopeContext {
+function getScopeContext(
+  auth: { scope: string; partnerId: string | null; orgId: string | null; canAccessOrg?: (orgId: string) => boolean },
+  requestedOrgId?: string | null,
+  requestedPartnerId?: string | null,
+): ScopeContext {
+  if (auth.scope === 'system' && requestedOrgId) {
+    if (auth.canAccessOrg && !auth.canAccessOrg(requestedOrgId)) {
+      throw new HTTPException(403, { message: 'Access denied to this organization' });
+    }
+    return { scope: 'organization', orgId: requestedOrgId };
+  }
+
+  if (auth.scope === 'system' && requestedPartnerId) {
+    return { scope: 'partner', partnerId: requestedPartnerId };
+  }
+
+  if (auth.scope === 'system') {
+    return { scope: 'system' };
+  }
+
   if (auth.scope === 'partner' && auth.partnerId) {
     return { scope: 'partner', partnerId: auth.partnerId };
   }
@@ -87,6 +111,22 @@ function getScopeContext(auth: { scope: string; partnerId: string | null; orgId:
 }
 
 async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
+  if (scopeContext.scope === 'system') {
+    if (roleId !== SYSTEM_ROLE_ID) {
+      return null;
+    }
+
+    return {
+      id: SYSTEM_ROLE_ID,
+      scope: 'system' as const,
+      name: SYSTEM_ROLE_NAME,
+      description: SYSTEM_ROLE_DESCRIPTION,
+      isSystem: true,
+      partnerId: null,
+      orgId: null
+    };
+  }
+
   const [role] = await db
     .select({
       id: roles.id,
@@ -121,6 +161,33 @@ async function getScopedRole(roleId: string, scopeContext: ScopeContext) {
 }
 
 async function getScopedUser(userId: string, scopeContext: ScopeContext) {
+  if (scopeContext.scope === 'system') {
+    const [record] = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        status: users.status,
+        roleId: users.id,
+        roleName: users.name
+      })
+      .from(users)
+      .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+      .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+      .where(and(eq(users.id, userId), isNull(partnerUsers.userId), isNull(organizationUsers.userId)))
+      .limit(1);
+
+    if (!record) {
+      return null;
+    }
+
+    return {
+      ...record,
+      roleId: SYSTEM_ROLE_ID,
+      roleName: SYSTEM_ROLE_NAME
+    };
+  }
+
   if (scopeContext.scope === 'partner') {
     const [record] = await db
       .select({
@@ -429,7 +496,30 @@ userRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
+
+    if (scopeContext.scope === 'system') {
+      const data = await db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          status: users.status,
+          lastLoginAt: users.lastLoginAt
+        })
+        .from(users)
+        .leftJoin(partnerUsers, eq(partnerUsers.userId, users.id))
+        .leftJoin(organizationUsers, eq(organizationUsers.userId, users.id))
+        .where(and(isNull(partnerUsers.userId), isNull(organizationUsers.userId)));
+
+      return c.json({
+        data: data.map((row) => ({
+          ...row,
+          roleId: SYSTEM_ROLE_ID,
+          roleName: SYSTEM_ROLE_NAME
+        }))
+      });
+    }
 
     if (scopeContext.scope === 'partner') {
       const data = await db
@@ -480,7 +570,21 @@ userRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
+
+    if (scopeContext.scope === 'system') {
+      return c.json({
+        data: [
+          {
+            id: SYSTEM_ROLE_ID,
+            name: SYSTEM_ROLE_NAME,
+            description: SYSTEM_ROLE_DESCRIPTION,
+            scope: 'system',
+            isSystem: true
+          }
+        ]
+      });
+    }
 
     if (scopeContext.scope === 'partner') {
       const data = await db
@@ -527,7 +631,7 @@ userRoutes.get(
   requirePermission(PERMISSIONS.USERS_READ.resource, PERMISSIONS.USERS_READ.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const userId = c.req.param('id')!;
 
     const record = await getScopedUser(userId, scopeContext);
@@ -546,7 +650,7 @@ userRoutes.post(
   zValidator('json', inviteUserSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const data = c.req.valid('json');
 
     if (scopeContext.scope === 'partner') {
@@ -597,6 +701,29 @@ userRoutes.post(
 
       if (!user) {
         throw new HTTPException(500, { message: 'Failed to create user' });
+      }
+
+      if (scopeContext.scope === 'system') {
+        if (existingUser) {
+          const [partnerLink] = await tx
+            .select({ id: partnerUsers.id })
+            .from(partnerUsers)
+            .where(eq(partnerUsers.userId, user.id))
+            .limit(1);
+          const [orgLink] = await tx
+            .select({ id: organizationUsers.id })
+            .from(organizationUsers)
+            .where(eq(organizationUsers.userId, user.id))
+            .limit(1);
+
+          if (!partnerLink && !orgLink) {
+            return { user, linkCreated: false };
+          }
+
+          throw new HTTPException(409, { message: 'User already exists in another scope' });
+        }
+
+        return { user, linkCreated: true };
       }
 
       if (scopeContext.scope === 'partner') {
@@ -700,7 +827,7 @@ userRoutes.post(
   zValidator('json', resendInviteSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const { userId } = c.req.valid('json');
 
     const record = await getScopedUser(userId, scopeContext);
@@ -746,7 +873,7 @@ userRoutes.patch(
   zValidator('json', updateUserSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const userId = c.req.param('id')!;
     const data = c.req.valid('json');
 
@@ -808,8 +935,38 @@ userRoutes.delete(
   requirePermission(PERMISSIONS.USERS_DELETE.resource, PERMISSIONS.USERS_DELETE.action),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const userId = c.req.param('id')!;
+
+    if (scopeContext.scope === 'system') {
+      if (userId === auth.user.id) {
+        return c.json({ error: 'You cannot remove your own system admin account' }, 400);
+      }
+
+      const record = await getScopedUser(userId, scopeContext);
+      if (!record) {
+        return c.json({ error: 'User not found' }, 404);
+      }
+
+      await db.delete(sessions).where(eq(sessions.userId, userId));
+      const deletedUsers = await db
+        .delete(users)
+        .where(eq(users.id, userId))
+        .returning({ id: users.id });
+
+      if (deletedUsers.length === 0) {
+        return c.json({ error: 'User not found' }, 404);
+      }
+
+      writeUserAudit(c, auth, scopeContext, {
+        action: 'user.remove',
+        resourceId: userId,
+        resourceName: record.name,
+        details: { scope: 'system' }
+      });
+
+      return c.json({ success: true });
+    }
 
     if (scopeContext.scope === 'partner') {
       const deleted = await db
@@ -828,6 +985,10 @@ userRoutes.delete(
       });
 
       return c.json({ success: true });
+    }
+
+    if (scopeContext.scope !== 'organization') {
+      return c.json({ error: 'Organization context required' }, 400);
     }
 
     const deleted = await db
@@ -855,9 +1016,13 @@ userRoutes.post(
   zValidator('json', assignRoleSchema),
   async (c) => {
     const auth = c.get('auth');
-    const scopeContext = getScopeContext(auth);
+    const scopeContext = getScopeContext(auth, c.req.query('orgId'), c.req.query('partnerId'));
     const userId = c.req.param('id')!;
     const { roleId } = c.req.valid('json');
+
+    if (scopeContext.scope === 'system') {
+      return c.json({ error: 'System-scope role assignment is not supported from this endpoint' }, 400);
+    }
 
     const role = await getScopedRole(roleId, scopeContext);
     if (!role) {

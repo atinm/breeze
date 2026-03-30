@@ -173,6 +173,9 @@ describe('AI provider config routes', () => {
     const mockSelectFrom = vi.fn().mockReturnValue({ where: mockSelectWhere });
     vi.mocked(db.select).mockReturnValue({ from: mockSelectFrom } as any);
 
+    const mockDisableWhere = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: mockDisableWhere }) } as any);
+
     const mockOnConflict = vi.fn().mockResolvedValue(undefined);
     const mockValues = vi.fn().mockReturnValue({ onConflictDoUpdate: mockOnConflict });
     vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);
@@ -191,7 +194,36 @@ describe('AI provider config routes', () => {
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(mockOnConflict).toHaveBeenCalled();
+    expect(mockDisableWhere).toHaveBeenCalled();
     expect(writeRouteAudit).toHaveBeenCalled();
+  });
+
+  it('PUT /provider-configs/:provider accepts ollama configs for system scope', async () => {
+    const mockSelectLimit = vi.fn().mockResolvedValue([]);
+    const mockSelectWhere = vi.fn().mockReturnValue({ limit: mockSelectLimit });
+    const mockSelectFrom = vi.fn().mockReturnValue({ where: mockSelectWhere });
+    vi.mocked(db.select).mockReturnValue({ from: mockSelectFrom } as any);
+
+    vi.mocked(db.update).mockReturnValue({ set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }) } as any);
+
+    const mockOnConflict = vi.fn().mockResolvedValue(undefined);
+    const mockValues = vi.fn().mockReturnValue({ onConflictDoUpdate: mockOnConflict });
+    vi.mocked(db.insert).mockReturnValue({ values: mockValues } as any);
+
+    const res = await app.request(`/ai/provider-configs/ollama?partnerId=${PARTNER_A}`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer token', 'Content-Type': 'application/json', 'x-test-scope': 'system' },
+      body: JSON.stringify({
+        enabled: true,
+        defaultModel: 'qwen3:8b',
+        endpoint: 'http://ollama-bridge:8000',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(mockOnConflict).toHaveBeenCalled();
   });
 
   it('DELETE /provider-configs/:provider returns 404 when config does not exist', async () => {

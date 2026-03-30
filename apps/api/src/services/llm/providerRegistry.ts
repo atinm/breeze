@@ -5,6 +5,7 @@ import { OpenAIProvider } from './providers/openaiProvider';
 import { LocalProvider } from './providers/localProvider';
 import { GeminiProvider } from './providers/geminiProvider';
 import { CopilotProvider } from './providers/copilotProvider';
+import { OllamaProvider } from './providers/ollamaProvider';
 
 export type ProviderRuntimeOverrides = {
   apiKey?: string;
@@ -21,6 +22,8 @@ export function createLlmProvider(provider: AiProviderId, overrides?: ProviderRu
       return new OpenAIProvider({ apiKey: overrides?.apiKey, baseUrl: overrides?.baseUrl });
     case 'local':
       return new LocalProvider({ apiKey: overrides?.apiKey, baseUrl: overrides?.baseUrl });
+    case 'ollama':
+      return new OllamaProvider({ baseUrl: overrides?.baseUrl });
     case 'gemini':
       return new GeminiProvider({ apiKey: overrides?.apiKey, apiVersion: overrides?.apiVersion });
     case 'copilot':

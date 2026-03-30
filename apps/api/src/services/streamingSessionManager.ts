@@ -26,6 +26,7 @@ import { createSessionPreToolUse, createSessionPostToolUse } from './aiAgentSdk'
 import type { RequestLike } from './auditEvents';
 import type { LlmPromptMessage, LlmQueryMessage, LlmResultMessage, LlmRuntimeQuery } from './llm/types';
 import type { ToolServerDefinition } from './llm/toolServer';
+import { filterToolServerByAllowedNames } from './llm/toolServer';
 import { createLlmProvider } from './llm/providerRegistry';
 import type { AiProviderId } from '@breeze/shared/types/ai';
 import { resolveProviderRuntimeConfig } from './aiProviderConfig';
@@ -196,6 +197,7 @@ export interface AuditSnapshot {
 
 export interface ActiveSession {
   readonly breezeSessionId: string;
+  readonly orgId: string;
   readonly provider: AiProviderId;
   readonly providerModel: string;
   sdkSessionId: string | null;
@@ -331,6 +333,7 @@ export class StreamingSessionManager {
     const now = Date.now();
     const session: ActiveSession = {
       breezeSessionId,
+      orgId: dbSession.orgId,
       provider: dbSession.provider,
       providerModel: dbSession.providerModel || dbSession.model,
       sdkSessionId: dbSession.sdkSessionId,
@@ -371,6 +374,15 @@ export class StreamingSessionManager {
     } else {
       mcpServer = createBreezeMcpServer(() => session.auth, preToolUse, postToolUse, () => session);
     }
+    if (allowedTools && allowedTools.length > 0) {
+      const allowedBareNames = allowedTools
+        .map((toolName) => toolName.startsWith(`mcp__${mcpServerName}__`)
+          ? toolName.slice(`mcp__${mcpServerName}__`.length)
+          : toolName)
+        .filter(Boolean);
+      mcpServer = filterToolServerByAllowedNames(mcpServer, allowedBareNames);
+    }
+
     session.mcpServer = mcpServer;
     session.mcpPrefix = `mcp__${mcpServerName}__`;
 
@@ -394,6 +406,14 @@ export class StreamingSessionManager {
     // request completes and the transaction commits.
     runOutsideDbContextSafe(() => {
       void (async () => {
+        console.log('[StreamingSessionManager] Initializing provider query', {
+          sessionId: breezeSessionId,
+          orgId: dbSession.orgId ?? null,
+          provider: dbSession.provider,
+          providerModel: dbSession.providerModel || dbSession.model,
+          mcpServerName,
+        });
+
         const runtimeConfig = await resolveProviderRuntimeConfig(dbSession.orgId, dbSession.provider);
         const llmProvider = createLlmProvider(dbSession.provider, {
           apiKey: runtimeConfig.apiKey ?? undefined,
@@ -423,6 +443,13 @@ export class StreamingSessionManager {
               console.error('[SDK-stderr]', breezeSessionId, data.trim());
             }
           },
+        });
+
+        console.log('[StreamingSessionManager] Provider query started', {
+          sessionId: breezeSessionId,
+          provider: dbSession.provider,
+          providerModel: dbSession.providerModel || dbSession.model,
+          mcpServerName,
         });
 
         (session as { query: LlmRuntimeQuery }).query = runtimeQuery;
@@ -675,14 +702,7 @@ export class StreamingSessionManager {
             this.clearTurnTimeout(session);
 
             const resultMsg: LlmResultMessage = message;
-            const orgId = session.auth.orgId;
-
-            if (!orgId) {
-              console.warn('[StreamingSessionManager] Skipping usage recording — no orgId on session', session.breezeSessionId);
-              session.eventBus.publish({ type: 'done' });
-              session.state = 'idle';
-              break;
-            }
+            const orgId = session.orgId;
 
             // Extract usage with defensive checks — SDK types say usage is non-nullable
             // but in practice it may be missing, leaving sessions with 0 tokens
@@ -722,11 +742,36 @@ export class StreamingSessionManager {
               const errorMsg = errors.length > 0 ? errors[0] : `AI query ended: ${resultMsg.subtype}`;
 
               if (resultMsg.subtype === 'error_max_budget_usd') {
+                console.warn('[StreamingSessionManager] Publishing stream error', {
+                  sessionId: session.breezeSessionId,
+                  provider: session.provider,
+                  providerModel: session.providerModel,
+                  subtype: resultMsg.subtype,
+                  message: 'AI budget limit reached for this query.',
+                  subscriberCount: session.eventBus.subscriberCount,
+                });
                 session.eventBus.publish({ type: 'error', message: 'AI budget limit reached for this query.' });
               } else if (resultMsg.subtype === 'error_max_turns') {
+                console.warn('[StreamingSessionManager] Publishing stream error', {
+                  sessionId: session.breezeSessionId,
+                  provider: session.provider,
+                  providerModel: session.providerModel,
+                  subtype: resultMsg.subtype,
+                  message: 'Maximum conversation turns reached.',
+                  subscriberCount: session.eventBus.subscriberCount,
+                });
                 session.eventBus.publish({ type: 'error', message: 'Maximum conversation turns reached.' });
               } else {
-                session.eventBus.publish({ type: 'error', message: sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error')) });
+                const clientMessage = sanitizeErrorForClient(new Error(errorMsg ?? 'Unknown error'));
+                console.warn('[StreamingSessionManager] Publishing stream error', {
+                  sessionId: session.breezeSessionId,
+                  provider: session.provider,
+                  providerModel: session.providerModel,
+                  subtype: resultMsg.subtype,
+                  message: clientMessage,
+                  subscriberCount: session.eventBus.subscriberCount,
+                });
+                session.eventBus.publish({ type: 'error', message: clientMessage });
               }
 
               try {

@@ -1,7 +1,11 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
 import { navigateTo } from '@/lib/navigation';
+import { getAuthScopeFromToken } from '@/lib/authScope';
 import { ConfirmDialog } from '../shared/ConfirmDialog';
+import PartnerCombobox from '../shared/PartnerCombobox';
 import { showToast } from '../shared/Toast';
 
 interface EnrollmentKey {
@@ -28,6 +32,22 @@ interface CreateFormValues {
 type ModalMode = 'closed' | 'create' | 'delete';
 
 export default function EnrollmentKeyManager() {
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
+  const {
+    currentPartnerId,
+    currentOrgId,
+    currentSiteId,
+    partners,
+    organizations,
+    sites,
+    setPartner,
+    setOrganization,
+    setSite,
+    fetchPartners,
+    fetchOrganizations,
+    fetchSites,
+  } = useOrgStore();
   const [keys, setKeys] = useState<EnrollmentKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -45,11 +65,30 @@ export default function EnrollmentKeyManager() {
   const [formMaxUsage, setFormMaxUsage] = useState('');
   const [formExpiresAt, setFormExpiresAt] = useState('');
 
+  const requiresExplicitOrganization = authScope === 'system' || authScope === 'partner';
+  const canQueryKeys = !requiresExplicitOrganization || Boolean(currentOrgId);
+  const canCreateKey = Boolean(currentOrgId) && Boolean(currentSiteId);
+  const currentPartner = partners.find((partner) => partner.id === currentPartnerId) ?? null;
+  const currentOrg = organizations.find((org) => org.id === currentOrgId) ?? null;
+  const currentSite = sites.find((site) => site.id === currentSiteId) ?? null;
+
   const fetchKeys = useCallback(async (page = 1) => {
+    if (!canQueryKeys) {
+      setKeys([]);
+      setTotalPages(1);
+      setCurrentPage(1);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth(`/enrollment-keys?page=${page}`);
+      const params = new URLSearchParams({ page: String(page) });
+      if (currentOrgId) {
+        params.set('orgId', currentOrgId);
+      }
+      const response = await fetchWithAuth(`/enrollment-keys?${params.toString()}`);
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -68,11 +107,47 @@ export default function EnrollmentKeyManager() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [canQueryKeys, currentOrgId]);
 
   useEffect(() => {
-    fetchKeys();
+    if (authScope === 'system') {
+      void fetchPartners();
+    }
+  }, [authScope, fetchPartners]);
+
+  useEffect(() => {
+    if (authScope === 'organization') {
+      void fetchOrganizations();
+      return;
+    }
+
+    if (authScope === 'partner') {
+      void fetchOrganizations();
+      return;
+    }
+
+    if (authScope === 'system' && currentPartnerId) {
+      void fetchOrganizations();
+    }
+  }, [authScope, currentPartnerId, fetchOrganizations]);
+
+  useEffect(() => {
+    if (currentOrgId) {
+      void fetchSites();
+    }
+  }, [currentOrgId, fetchSites]);
+
+  useEffect(() => {
+    void fetchKeys();
   }, [fetchKeys]);
+
+  const visibleKeys = useMemo(
+    () =>
+      currentSiteId
+        ? keys.filter((key) => key.siteId === null || key.siteId === currentSiteId)
+        : keys,
+    [currentSiteId, keys]
+  );
 
   const handleCopyKey = async (key: string, id: string) => {
     try {
@@ -85,6 +160,9 @@ export default function EnrollmentKeyManager() {
   };
 
   const handleOpenCreate = () => {
+    if (!canCreateKey) {
+      return;
+    }
     setFormName('');
     setFormMaxUsage('');
     setFormExpiresAt('');
@@ -105,12 +183,15 @@ export default function EnrollmentKeyManager() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const body: Record<string, unknown> = { name: formName };
-
-      // Use first available orgId from existing keys, or let the server resolve it
-      if (keys.length > 0) {
-        body.orgId = keys[0].orgId;
+      if (!currentOrgId || !currentSiteId) {
+        throw new Error('Select an organization and site before creating an enrollment key');
       }
+
+      const body: Record<string, unknown> = {
+        name: formName,
+        orgId: currentOrgId,
+        siteId: currentSiteId,
+      };
 
       if (formMaxUsage) {
         body.maxUsage = parseInt(formMaxUsage, 10);
@@ -249,6 +330,7 @@ export default function EnrollmentKeyManager() {
         <button
           type="button"
           onClick={handleOpenCreate}
+          disabled={!canCreateKey}
           className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90"
         >
           <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -256,6 +338,73 @@ export default function EnrollmentKeyManager() {
           </svg>
           Create Key
         </button>
+      </div>
+
+      <div className="rounded-lg border bg-card/50 p-4">
+        <div className="flex flex-wrap items-end gap-3">
+          {authScope === 'system' ? (
+            <>
+              <label className="flex min-w-[240px] flex-1 flex-col gap-1.5">
+                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Partner</span>
+                <PartnerCombobox
+                  partners={partners}
+                  selectedPartnerId={currentPartnerId}
+                  onSelect={setPartner}
+                  placeholder="Select Partner"
+                  title="Select Partner"
+                  className="min-w-[240px] flex-1"
+                  dropdownClassName="min-w-[280px]"
+                />
+              </label>
+              <span className="pb-2 text-muted-foreground">/</span>
+            </>
+          ) : null}
+
+          <label className="flex min-w-[220px] flex-1 flex-col gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Organization</span>
+            <select
+              value={currentOrgId ?? ''}
+              onChange={(event) => setOrganization(event.target.value || null)}
+              className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
+            >
+              <option value="">
+                {requiresExplicitOrganization ? 'Select Organization' : 'Current Organization'}
+              </option>
+              {organizations.map((org) => (
+                <option key={org.id} value={org.id}>
+                  {org.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <span className="pb-2 text-muted-foreground">/</span>
+
+          <label className="flex min-w-[220px] flex-1 flex-col gap-1.5">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Site</span>
+            <select
+              value={currentSiteId ?? ''}
+              onChange={(event) => setSite(event.target.value || null)}
+              disabled={!currentOrgId}
+              className="h-9 rounded-md border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <option value="">{currentOrgId ? 'Select Site' : 'Select Organization First'}</option>
+              {sites.map((site) => (
+                <option key={site.id} value={site.id}>
+                  {site.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          {currentSite
+            ? `New keys will enroll devices into ${currentSite.name}${currentOrg ? ` under ${currentOrg.name}` : ''}.`
+            : 'Choose an organization and site before creating a new enrollment key.'}
+        </p>
+        {authScope === 'system' && !currentPartner ? (
+          <p className="mt-2 text-xs text-muted-foreground">Select a partner first to load organizations and sites.</p>
+        ) : null}
       </div>
 
       {error && (
@@ -300,6 +449,7 @@ export default function EnrollmentKeyManager() {
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Key</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Site</th>
                 <th className="px-4 py-3">Usage</th>
                 <th className="px-4 py-3">Expires</th>
                 <th className="px-4 py-3">Created</th>
@@ -307,14 +457,22 @@ export default function EnrollmentKeyManager() {
               </tr>
             </thead>
             <tbody>
-              {keys.length === 0 ? (
+              {!canQueryKeys ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">
-                    No enrollment keys found. Create one to get started.
+                  <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                    Select an organization to view enrollment keys.
+                  </td>
+                </tr>
+              ) : visibleKeys.length === 0 ? (
+                <tr>
+                  <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">
+                    {currentSiteId
+                      ? 'No enrollment keys found for the selected site.'
+                      : 'No enrollment keys found. Create one to get started.'}
                   </td>
                 </tr>
               ) : (
-                keys.map((key) => {
+                visibleKeys.map((key) => {
                   const status = getKeyStatus(key);
                   return (
                     <tr key={key.id} className="border-b last:border-b-0 hover:bg-muted/50">
@@ -350,6 +508,11 @@ export default function EnrollmentKeyManager() {
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${status.className}`}>
                           {status.label}
                         </span>
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">
+                        {key.siteId
+                          ? (sites.find((site) => site.id === key.siteId)?.name ?? 'Unknown Site')
+                          : 'Organization-wide'}
                       </td>
                       <td className="px-4 py-3 tabular-nums">
                         {key.usageCount}{key.maxUsage !== null ? ` / ${key.maxUsage}` : ''}
@@ -423,6 +586,17 @@ export default function EnrollmentKeyManager() {
             <p className="mt-1 text-sm text-muted-foreground">
               Generate a new key for agent enrollment.
             </p>
+            <div className="mt-4 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+              <p>
+                Partner: <span className="font-medium">{currentPartner?.name ?? 'Current Partner'}</span>
+              </p>
+              <p>
+                Organization: <span className="font-medium">{currentOrg?.name ?? 'Not selected'}</span>
+              </p>
+              <p>
+                Site: <span className="font-medium">{currentSite?.name ?? 'Not selected'}</span>
+              </p>
+            </div>
             <form onSubmit={handleCreateSubmit} className="mt-4 space-y-4">
               <div>
                 <label className="text-sm font-medium">Name</label>
@@ -468,7 +642,7 @@ export default function EnrollmentKeyManager() {
                 </button>
                 <button
                   type="submit"
-                  disabled={submitting || !formName.trim()}
+                  disabled={submitting || !formName.trim() || !canCreateKey}
                   className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {submitting ? 'Creating...' : 'Create Key'}

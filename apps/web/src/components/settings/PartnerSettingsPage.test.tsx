@@ -2,11 +2,12 @@ import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import PartnerSettingsPage from './PartnerSettingsPage';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 
 vi.mock('../../stores/auth', () => ({
-  fetchWithAuth: vi.fn()
+  fetchWithAuth: vi.fn(),
+  useAuthStore: vi.fn(),
 }));
 
 vi.mock('../../stores/orgStore', () => ({
@@ -14,6 +15,7 @@ vi.mock('../../stores/orgStore', () => ({
 }));
 
 const fetchWithAuthMock = vi.mocked(fetchWithAuth);
+const useAuthStoreMock = vi.mocked(useAuthStore);
 const useOrgStoreMock = vi.mocked(useOrgStore);
 
 const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500): Response =>
@@ -27,6 +29,11 @@ const makeJsonResponse = (payload: unknown, ok = true, status = ok ? 200 : 500):
 describe('PartnerSettingsPage language control', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useAuthStoreMock.mockImplementation((selector) => selector({
+      tokens: {
+        accessToken: 'header.eyJzY29wZSI6InBhcnRuZXIifQ.signature',
+      },
+    } as never));
     useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-1', isLoading: false } as never);
   });
 
@@ -57,5 +64,41 @@ describe('PartnerSettingsPage language control', () => {
     await screen.findByText('Partner Settings');
     expect(screen.queryByText('More languages coming soon')).toBeNull();
     expect(screen.getByText('Default language for partner settings.')).not.toBeNull();
+  });
+
+  it('loads selected partner settings through the system admin route', async () => {
+    useAuthStoreMock.mockImplementation((selector) => selector({
+      tokens: {
+        accessToken: 'header.eyJzY29wZSI6InN5c3RlbSJ9.signature',
+      },
+    } as never));
+    useOrgStoreMock.mockReturnValue({ currentPartnerId: 'partner-42', isLoading: false } as never);
+
+    fetchWithAuthMock.mockResolvedValueOnce(
+      makeJsonResponse({
+        id: 'partner-42',
+        name: 'System Selected MSP',
+        slug: 'system-selected',
+        type: 'partner',
+        plan: 'pro',
+        createdAt: '2026-02-09T00:00:00.000Z',
+        settings: {
+          timezone: 'UTC',
+          dateFormat: 'MM/DD/YYYY',
+          timeFormat: '12h',
+          language: 'en',
+          businessHours: { preset: 'business' },
+          contact: {}
+        }
+      })
+    );
+
+    render(<PartnerSettingsPage />);
+
+    await screen.findByText('Partner Settings');
+    expect(fetchWithAuthMock).toHaveBeenCalledWith('/partners/partner-42');
+    expect(screen.getByText('Configure defaults for System Selected MSP.')).not.toBeNull();
+    expect(screen.getByText('System admin editing partner settings')).not.toBeNull();
+    expect(screen.getByText('Partner: System Selected MSP (system-selected)')).not.toBeNull();
   });
 });

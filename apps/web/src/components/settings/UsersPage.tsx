@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import UserList, { type User } from './UserList';
 import UserInviteForm, { type RoleOption } from './UserInviteForm';
 import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'invite' | 'edit' | 'remove';
@@ -23,6 +25,9 @@ type Toast = {
 
 export default function UsersPage() {
   const currentUser = useAuthStore((s) => s.user);
+  const accessToken = useAuthStore((s) => s.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
+  const { currentPartnerId, currentOrgId, partners, organizations } = useOrgStore();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<RoleOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -40,11 +45,29 @@ export default function UsersPage() {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  const contextQuery = useCallback((path: string) => {
+    if (authScope !== 'system') {
+      return path;
+    }
+
+    if (currentOrgId) {
+      const separator = path.includes('?') ? '&' : '?';
+      return `${path}${separator}orgId=${encodeURIComponent(currentOrgId)}`;
+    }
+
+    if (currentPartnerId) {
+      const separator = path.includes('?') ? '&' : '?';
+      return `${path}${separator}partnerId=${encodeURIComponent(currentPartnerId)}`;
+    }
+
+    return path;
+  }, [authScope, currentOrgId, currentPartnerId]);
+
   const fetchUsers = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/users');
+      const response = await fetchWithAuth(contextQuery('/users'));
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -69,11 +92,11 @@ export default function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [contextQuery]);
 
   const fetchRoles = useCallback(async () => {
     try {
-      const response = await fetchWithAuth('/users/roles');
+      const response = await fetchWithAuth(contextQuery('/users/roles'));
       if (!response.ok) return;
       const data = await response.json();
       setRoles(
@@ -86,7 +109,7 @@ export default function UsersPage() {
     } catch {
       // roles will remain empty; form still works
     }
-  }, []);
+  }, [contextQuery]);
 
   useEffect(() => {
     fetchUsers();
@@ -110,7 +133,7 @@ export default function UsersPage() {
 
   const handleResendInvite = async (user: User) => {
     try {
-      const response = await fetchWithAuth('/users/resend-invite', {
+      const response = await fetchWithAuth(contextQuery('/users/resend-invite'), {
         method: 'POST',
         body: JSON.stringify({ userId: user.id })
       });
@@ -161,7 +184,7 @@ export default function UsersPage() {
           .filter(Boolean);
       }
 
-      const response = await fetchWithAuth('/users/invite', {
+      const response = await fetchWithAuth(contextQuery('/users/invite'), {
         method: 'POST',
         body: JSON.stringify(payload)
       });
@@ -197,7 +220,7 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
+      const response = await fetchWithAuth(contextQuery(`/users/${selectedUser.id}`), {
         method: 'PATCH',
         body: JSON.stringify(values)
       });
@@ -220,7 +243,7 @@ export default function UsersPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/users/${selectedUser.id}`, {
+      const response = await fetchWithAuth(contextQuery(`/users/${selectedUser.id}`), {
         method: 'DELETE'
       });
 
@@ -263,12 +286,26 @@ export default function UsersPage() {
     );
   }
 
+  const currentPartner = partners.find((partner) => partner.id === currentPartnerId) ?? null;
+  const currentOrg = organizations.find((org) => org.id === currentOrgId) ?? null;
+  const systemContextLabel = currentOrg
+    ? `Viewing organization users for ${currentOrg.name}`
+    : currentPartner
+      ? `Viewing partner users for ${currentPartner.name}`
+      : 'Viewing system administrators';
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-xl font-semibold tracking-tight">Users</h1>
         <p className="text-muted-foreground">Manage user access, roles, and permissions.</p>
       </div>
+
+      {authScope === 'system' ? (
+        <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          {systemContextLabel}
+        </div>
+      ) : null}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

@@ -56,6 +56,7 @@ vi.mock('../middleware/auth', () => ({
       scope: 'partner',
       partnerId: 'partner-123',
       orgId: null,
+      canAccessOrg: () => true,
       user: { id: 'user-123', email: 'test@example.com' }
     });
     return next();
@@ -76,6 +77,7 @@ describe('role routes', () => {
         scope: 'partner',
         partnerId: 'partner-123',
         orgId: null,
+        canAccessOrg: () => true,
         user: { id: 'user-123', email: 'test@example.com' }
       });
       return next();
@@ -134,24 +136,135 @@ describe('role routes', () => {
       expect(body.data[1].userCount).toBe(3);
     });
 
-    it('should reject missing partner/org context', async () => {
+    it('should allow system scope with no tenant context', async () => {
       vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
         c.set('auth', {
           scope: 'system',
           partnerId: null,
           orgId: null,
+          canAccessOrg: () => true,
           user: { id: 'user-123', email: 'test@example.com' }
         });
         return next();
       });
+
+      vi.mocked(db.select).mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            leftJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([{ count: 1 }])
+            })
+          })
+        })
+      } as any);
 
       const res = await app.request('/roles', {
         method: 'GET',
         headers: { Authorization: 'Bearer token' }
       });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].name).toBe('System Admin');
+      expect(body.data[0].userCount).toBe(1);
     });
+
+    it('should allow system scope when orgId query is provided', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      const now = new Date();
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                id: 'role-1',
+                name: 'Org Admin',
+                description: null,
+                scope: 'organization',
+                isSystem: true,
+                parentRoleId: null,
+                createdAt: now,
+                updatedAt: now
+              }
+            ])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ roleId: 'role-1', count: 2 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/roles?orgId=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].name).toBe('Org Admin');
+    });
+
+    it('should allow system scope when partnerId query is provided', async () => {
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          scope: 'system',
+          partnerId: null,
+          orgId: null,
+          canAccessOrg: () => true,
+          user: { id: 'user-123', email: 'test@example.com' }
+        });
+        return next();
+      });
+
+      const now = new Date();
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                id: 'role-1',
+                name: 'Partner Admin',
+                description: null,
+                scope: 'partner',
+                isSystem: true,
+                parentRoleId: null,
+                createdAt: now,
+                updatedAt: now
+              }
+            ])
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              groupBy: vi.fn().mockResolvedValue([{ roleId: 'role-1', count: 1 }])
+            })
+          })
+        } as any);
+
+      const res = await app.request('/roles?partnerId=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data[0].name).toBe('Partner Admin');
+    });
+
   });
 
   describe('POST /roles', () => {

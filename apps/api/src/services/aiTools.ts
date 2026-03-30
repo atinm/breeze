@@ -172,9 +172,22 @@ export async function executeTool(
   const tool = aiTools.get(toolName);
   if (!tool) throw new Error(`Unknown tool: ${toolName}`);
 
+  console.log('[AITools] Executing tool', {
+    toolName,
+    input,
+    scope: auth.scope,
+    orgId: auth.orgId ?? null,
+    partnerId: auth.partnerId ?? null,
+  });
+
   // Validate input against Zod schema before execution
   const validation = validateToolInput(toolName, input);
   if (!validation.success) {
+    console.warn('[AITools] Tool input validation failed', {
+      toolName,
+      input,
+      error: validation.error,
+    });
     return JSON.stringify({ error: validation.error });
   }
 

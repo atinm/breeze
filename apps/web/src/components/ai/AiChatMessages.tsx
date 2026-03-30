@@ -117,11 +117,11 @@ export default function AiChatMessages({
         if (msg.role === 'assistant') {
           return (
             <div key={msg.id} className="flex gap-2">
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary">
+              <div className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${msg.isError ? 'bg-red-600' : 'bg-primary'}`}>
                 <Bot className="h-3.5 w-3.5 text-white" />
               </div>
               <div className="min-w-0 flex-1">
-                <div className="prose prose-sm max-w-none text-sm text-gray-900 prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert dark:text-gray-200">
+                <div className={`prose prose-sm max-w-none text-sm prose-headings:text-sm prose-headings:font-semibold prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0 prose-pre:my-2 prose-pre:overflow-x-auto prose-code:text-xs prose-code:before:content-none prose-code:after:content-none dark:prose-invert ${msg.isError ? 'text-red-700 dark:text-red-300' : 'text-gray-900 dark:text-gray-200'}`}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{

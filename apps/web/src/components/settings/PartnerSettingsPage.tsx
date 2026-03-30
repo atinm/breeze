@@ -8,10 +8,11 @@ import {
   Mail,
   Phone,
   Save,
+  Shield,
   User
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { useOrgStore } from '../../stores/orgStore';
 import KnownGuestsSettings from './KnownGuestsSettings';
 import PartnerSecurityTab from './PartnerSecurityTab';
@@ -36,6 +37,7 @@ import type {
   InheritableAiBudgetSettings
 } from '@breeze/shared';
 import { navigateTo } from '@/lib/navigation';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 
 type TabKey = 'regional' | 'security' | 'notifications' | 'eventLogs' | 'defaults' | 'branding' | 'aiBudgets' | 'aiProviders';
 
@@ -93,6 +95,8 @@ function hasAnyValue(obj: object): boolean {
 
 export default function PartnerSettingsPage() {
   const { currentPartnerId, isLoading: contextLoading } = useOrgStore();
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
   const [partner, setPartner] = useState<Partner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -118,11 +122,21 @@ export default function PartnerSettingsPage() {
   const [brandingData, setBrandingData] = useState<InheritableBrandingSettings>({});
   const [aiBudgetsData, setAiBudgetsData] = useState<InheritableAiBudgetSettings>({});
 
+  const partnerEndpoint = authScope === 'system'
+    ? currentPartnerId ? `/partners/${currentPartnerId}` : null
+    : '/partners/me';
+
   const fetchPartner = useCallback(async () => {
+    if (!partnerEndpoint) {
+      setPartner(null);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/partners/me');
+      const response = await fetchWithAuth(partnerEndpoint);
       if (!response.ok) {
         if (response.status === 401) { void navigateTo('/login', { replace: true }); return; }
         if (response.status === 403) { setError('You do not have permission to view partner settings'); return; }
@@ -156,14 +170,28 @@ export default function PartnerSettingsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [partnerEndpoint]);
 
   useEffect(() => {
-    if (currentPartnerId) { fetchPartner(); }
-    else { setLoading(contextLoading); }
-  }, [currentPartnerId, contextLoading, fetchPartner]);
+    if (authScope === 'partner') {
+      void fetchPartner();
+      return;
+    }
+
+    if (currentPartnerId) {
+      void fetchPartner();
+    } else {
+      setPartner(null);
+      setLoading(contextLoading);
+    }
+  }, [authScope, currentPartnerId, contextLoading, fetchPartner]);
 
   const handleSave = async () => {
+    if (!partnerEndpoint) {
+      setError('Select a partner to edit partner settings.');
+      return;
+    }
+
     try {
       setSaving(true);
       setError(undefined);
@@ -190,7 +218,7 @@ export default function PartnerSettingsPage() {
       settings.branding = brandingData;
       settings.aiBudgets = aiBudgetsData;
 
-      const response = await fetchWithAuth('/partners/me', {
+      const response = await fetchWithAuth(partnerEndpoint, {
         method: 'PATCH',
         body: JSON.stringify({ settings })
       });
@@ -211,13 +239,13 @@ export default function PartnerSettingsPage() {
     setCustomHours(prev => ({ ...prev, [day]: { ...prev[day], [field]: value } }));
   };
 
-  if (!currentPartnerId) {
+  if (authScope !== 'partner' && !currentPartnerId) {
     return (
       <div className="rounded-lg border border-amber-200 bg-amber-50 p-6 text-center dark:border-amber-800 dark:bg-amber-950">
         <Building2 className="mx-auto h-12 w-12 text-amber-500" />
-        <h2 className="mt-4 text-lg font-semibold">Partner Access Required</h2>
+        <h2 className="mt-4 text-lg font-semibold">No Partner Selected</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          Partner settings are only available to partner-level users.
+          Select a partner from the header to view and edit partner settings.
         </p>
       </div>
     );
@@ -248,6 +276,21 @@ export default function PartnerSettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
+      {authScope === 'system' && partner && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+          <div className="flex items-start gap-3">
+            <Shield className="mt-0.5 h-4 w-4 flex-none" />
+            <div>
+              <p className="font-medium">System admin editing partner settings</p>
+              <p className="text-amber-800/90 dark:text-amber-200/90">
+                Partner: {partner.name}
+                {partner.slug ? ` (${partner.slug})` : ''}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Partner Settings</h1>

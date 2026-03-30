@@ -193,7 +193,7 @@ function collectWarnings(env: Record<string, string | undefined>): ConfigWarning
       warnings.push({
         key: 'AGENT_ENROLLMENT_SECRET',
         message:
-          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. Agent enrollment is open without secret verification. Any valid enrollment key can enroll devices without an additional secret check.',
+          '[SECURITY WARNING] AGENT_ENROLLMENT_SECRET is not configured. Org-level enrollment secrets may still protect enrollment, but any organization without its own enrollment secret will allow enrollment with only a valid enrollment key.',
       });
     }
   }

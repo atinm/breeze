@@ -633,6 +633,39 @@ describe('requirePermission', () => {
     expect(res.status).toBe(200);
     expect(capturedPerms).toEqual(mockPerms);
   });
+
+  it('allows system scope without tenant-bound permission lookup', async () => {
+    let capturedPerms: any;
+    const app = new Hono();
+    app.use(async (c: any, next: any) => {
+      c.set('auth', {
+        ...baseAuth,
+        partnerId: null,
+        orgId: null,
+        scope: 'system',
+        accessibleOrgIds: null,
+        canAccessOrg: () => true
+      });
+      await next();
+    });
+    app.use(requirePermission('devices', 'read'));
+    app.get('/test', (c: any) => {
+      capturedPerms = c.get('permissions');
+      return c.json({ ok: true });
+    });
+
+    const res = await app.request('/test');
+
+    expect(res.status).toBe(200);
+    expect(vi.mocked(getUserPermissions)).not.toHaveBeenCalled();
+    expect(capturedPerms).toEqual({
+      permissions: [{ resource: '*', action: '*' }],
+      partnerId: null,
+      orgId: null,
+      roleId: 'system',
+      scope: 'system'
+    });
+  });
 });
 
 describe('requireMfa', () => {

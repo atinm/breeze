@@ -3,7 +3,7 @@
 // ============================================
 
 export type AiApprovalMode = 'per_step' | 'action_plan' | 'auto_approve' | 'hybrid_plan';
-export type AiProviderId = 'claude' | 'openai' | 'gemini' | 'copilot' | 'local';
+export type AiProviderId = 'claude' | 'openai' | 'gemini' | 'copilot' | 'local' | 'ollama';
 
 export interface ActionPlanStep {
   toolName: string;

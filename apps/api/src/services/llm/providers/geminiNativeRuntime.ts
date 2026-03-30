@@ -180,6 +180,13 @@ export class GeminiNativeRuntimeQuery implements LlmRuntimeQuery {
         ? 'Interrupted'
         : (err instanceof Error ? err.message : 'Gemini query failed');
 
+      console.error('[GeminiRuntime] Query failed', {
+        sessionId: this.sessionId,
+        model: this.input.model,
+        mcpServerNames: Object.keys(this.input.mcpServers),
+        error: message,
+      });
+
       this.output.push({
         type: 'result',
         subtype: 'error',

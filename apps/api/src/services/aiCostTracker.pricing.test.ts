@@ -27,6 +27,14 @@ describe('aiCostTracker provider-aware pricing', () => {
     expect(cents).toBe(0);
   });
 
+  it('defaults ollama provider cost to zero when no estimate is configured', () => {
+    delete process.env.LOCAL_LLM_ESTIMATED_INPUT_COST_PER_MILLION_CENTS;
+    delete process.env.LOCAL_LLM_ESTIMATED_OUTPUT_COST_PER_MILLION_CENTS;
+
+    const cents = calculateProviderCostCents('ollama', 'qwen3:8b', 10_000, 5_000);
+    expect(cents).toBe(0);
+  });
+
   it('uses local estimated pricing env overrides when configured', () => {
     process.env.LOCAL_LLM_ESTIMATED_INPUT_COST_PER_MILLION_CENTS = '50';
     process.env.LOCAL_LLM_ESTIMATED_OUTPUT_COST_PER_MILLION_CENTS = '200';

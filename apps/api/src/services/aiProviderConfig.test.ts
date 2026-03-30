@@ -5,6 +5,7 @@ const mockSelect = vi.fn();
 const mockFrom = vi.fn();
 const mockWhere = vi.fn();
 const mockLimit = vi.fn();
+let queryResultsQueue: unknown[] = [];
 
 vi.mock('../db', () => ({
   db: {
@@ -32,21 +33,28 @@ vi.mock('drizzle-orm', () => ({
 }));
 
 describe('resolveSessionProvider', () => {
+  const setQueryResults = (...results: unknown[]) => {
+    queryResultsQueue = [...results];
+  };
+
   const setProviderConfigResult = (configRows: unknown[]) => {
-    mockLimit
-      .mockResolvedValueOnce([{ partnerId: 'partner-1' }])
-      .mockResolvedValueOnce(configRows);
+    setQueryResults([{ partnerId: 'partner-1' }], configRows);
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    queryResultsQueue = [];
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ where: mockWhere });
-    mockWhere.mockReturnValue({ limit: mockLimit });
+    mockWhere.mockImplementation(() => ({
+      limit: () => Promise.resolve(queryResultsQueue.shift()),
+      then: (onFulfilled: (value: unknown) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve(queryResultsQueue.shift()).then(onFulfilled, onRejected),
+    }));
   });
 
-  it('falls back to session provider and model when no org config exists', async () => {
-    setProviderConfigResult([]);
+  it('falls back to claude session provider and model when no org config exists', async () => {
+    setQueryResults([{ partnerId: 'partner-1' }], [], [{ partnerId: 'partner-1' }], []);
 
     const resolved = await resolveSessionProvider(
       'org-1',
@@ -60,8 +68,18 @@ describe('resolveSessionProvider', () => {
     });
   });
 
+  it('rejects non-default providers when no org config exists', async () => {
+    setQueryResults([{ partnerId: 'partner-1' }], [], [{ partnerId: 'partner-1' }], []);
+
+    await expect(resolveSessionProvider(
+      'org-1',
+      { provider: 'claude', providerModel: 'claude-sonnet-4-5-20250929', model: 'claude-sonnet-4-5-20250929' },
+      { provider: 'openai' },
+    )).rejects.toThrow("AI provider 'openai' is disabled for this partner");
+  });
+
   it('uses org default model for requested provider when config exists', async () => {
-    setProviderConfigResult([{
+    setQueryResults([{ partnerId: 'partner-1' }], [{
       enabled: true,
       defaultModel: 'claude-haiku-4-5-20251001',
       allowedModels: null,
@@ -80,7 +98,7 @@ describe('resolveSessionProvider', () => {
   });
 
   it('rejects disabled provider config', async () => {
-    setProviderConfigResult([{
+    setQueryResults([{ partnerId: 'partner-1' }], [{
       enabled: false,
       defaultModel: 'gpt-4.1-mini',
       allowedModels: null,
@@ -94,7 +112,7 @@ describe('resolveSessionProvider', () => {
   });
 
   it('rejects model not in allowedModels allowlist', async () => {
-    setProviderConfigResult([{
+    setQueryResults([{ partnerId: 'partner-1' }], [{
       enabled: true,
       defaultModel: 'gpt-4.1-mini',
       allowedModels: ['gpt-4.1-mini'],
@@ -108,7 +126,7 @@ describe('resolveSessionProvider', () => {
   });
 
   it('allows providers that are runtime-enabled', async () => {
-    setProviderConfigResult([{
+    setQueryResults([{ partnerId: 'partner-1' }], [{
       enabled: true,
       defaultModel: 'gpt-4.1-mini',
       allowedModels: null,
@@ -127,7 +145,7 @@ describe('resolveSessionProvider', () => {
   });
 
   it('allows gemini provider when configured', async () => {
-    setProviderConfigResult([{
+    setQueryResults([{ partnerId: 'partner-1' }], [{
       enabled: true,
       defaultModel: 'gemini-2.5-pro',
       allowedModels: null,
@@ -145,8 +163,36 @@ describe('resolveSessionProvider', () => {
     });
   });
 
+  it('uses the enabled partner provider as the default for new sessions', async () => {
+    setQueryResults(
+      [{ partnerId: 'partner-1' }],
+      [
+        {
+          provider: 'gemini',
+          enabled: true,
+          defaultModel: 'gemini-2.5-pro',
+          allowedModels: null,
+          endpoint: null,
+          apiKeyRef: null,
+          options: null,
+        },
+      ]
+    );
+
+    const resolved = await resolveSessionProvider(
+      'org-1',
+      { provider: null, providerModel: null, model: null },
+      undefined,
+    );
+
+    expect(resolved).toEqual({
+      provider: 'gemini',
+      providerModel: 'gemini-2.5-pro',
+    });
+  });
+
   it('rejects when org does not resolve to a partner', async () => {
-    mockLimit.mockResolvedValueOnce([]);
+    setQueryResults([], []);
 
     await expect(resolveSessionProvider(
       'org-missing',

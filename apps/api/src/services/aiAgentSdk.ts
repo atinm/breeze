@@ -177,8 +177,23 @@ export async function runPreFlightChecks(
   try {
     providerSelection = await resolveSessionProvider(session.orgId, session, providerRequest);
   } catch (err) {
+    console.error('[AI-SDK] Provider resolution failed', {
+      sessionId,
+      orgId: session.orgId,
+      sessionProvider: session.provider ?? null,
+      requestedProvider: providerRequest?.provider ?? null,
+      requestedProviderModel: providerRequest?.providerModel ?? providerRequest?.model ?? null,
+      error: err instanceof Error ? err.message : 'Invalid provider selection',
+    });
     return { ok: false, error: err instanceof Error ? err.message : 'Invalid provider selection' };
   }
+
+  console.log('[AI-SDK] Preflight resolved provider', {
+    sessionId,
+    orgId: session.orgId,
+    provider: providerSelection.provider,
+    providerModel: providerSelection.providerModel,
+  });
 
   return {
     ok: true,

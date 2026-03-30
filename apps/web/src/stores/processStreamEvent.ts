@@ -61,6 +61,26 @@ export interface StreamableState {
 type StreamSetter = (fn: (s: StreamableState) => Partial<StreamableState>) => void;
 type StreamGetter = () => StreamableState;
 
+function formatAiErrorMessage(message: string): string {
+  const normalized = message.trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.includes('resource_exhausted') || lower.includes('quota exceeded')) {
+    const modelMatch = normalized.match(/model:\s*([a-z0-9._-]+)/i);
+    const retryMatch = normalized.match(/retry in\s+([0-9.]+s?)/i);
+    const modelName = modelMatch?.[1]?.replace(/\.+$/, '') ?? null;
+    const modelSuffix = modelName ? ` for ${modelName}` : '';
+    const retrySuffix = retryMatch ? `. Retry after ${retryMatch[1]}.` : '.';
+    return `Gemini quota exceeded${modelSuffix}. Check billing or choose a different Gemini model${retrySuffix}`;
+  }
+
+  if (normalized === 'Not logged in · Please run /login') {
+    return 'The AI provider could not authenticate to the MCP server. Check the configured provider and MCP connection settings.';
+  }
+
+  return normalized;
+}
+
 export function processStreamEvent(
   event: AiStreamEvent,
   set: StreamSetter,
@@ -152,9 +172,14 @@ export function processStreamEvent(
       return null;
     }
 
-    case 'error':
-      set(() => ({ error: event.message, isStreaming: false }));
+    case 'error': {
+      const message = formatAiErrorMessage(event.message);
+      set(() => ({
+        error: message,
+        isStreaming: false
+      }));
       return currentAssistantId;
+    }
 
     case 'plan_approval_required':
       set(() => ({

@@ -26,7 +26,7 @@ import { writeRouteAudit } from '../services/auditEvents';
 import { assertNotLocked } from '../services/effectiveSettings';
 import { db } from '../db';
 import { aiSessions, aiMessages, aiToolExecutions, auditLogs, aiProviderConfigs } from '../db/schema';
-import { eq, and, desc, gte, count, avg, asc, sql as drizzleSql } from 'drizzle-orm';
+import { eq, and, desc, gte, count, avg, asc, ne, sql as drizzleSql } from 'drizzle-orm';
 import {
   createAiSessionSchema as sharedCreateAiSessionSchema,
   sendAiMessageSchema,
@@ -38,6 +38,7 @@ import {
 import { aiActionPlans } from '../db/schema';
 import { captureException } from '../services/sentry';
 import { mergeProviderConfigOptions, toProviderConfigResponse } from '../services/llm/providerConfigOptions';
+import { getOllamaAllowedMcpToolNames } from '../services/ollamaToolFilter';
 
 const createAiSessionSchema = sharedCreateAiSessionSchema.extend({
   orgId: z.string().uuid().optional()
@@ -48,7 +49,7 @@ const partnerProviderQuerySchema = z.object({
 });
 
 const providerConfigParamSchema = z.object({
-  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local']),
+  provider: z.enum(['claude', 'openai', 'gemini', 'copilot', 'local', 'ollama']),
 });
 
 const upsertProviderConfigSchema = z.object({
@@ -338,6 +339,26 @@ aiRoutes.post(
     }
 
     const { session: dbSession, sanitizedContent, systemPrompt, maxBudgetUsd, provider, providerModel } = preflight;
+    const allowedTools = provider === 'ollama'
+      ? getOllamaAllowedMcpToolNames(sanitizedContent)
+      : undefined;
+
+    if (provider === 'ollama') {
+      console.log('[AI] Ollama tool filter', {
+        sessionId,
+        sanitizedContent,
+        allowedTools,
+      });
+    }
+
+    console.log('[AI] Message preflight ok', {
+      sessionId,
+      orgId: dbSession.orgId,
+      provider,
+      providerModel,
+      hasPageContext: Boolean(body.pageContext),
+      allowedToolCount: allowedTools?.length ?? null,
+    });
 
     // Get or create streaming session
     const activeSession = await streamingSessionManager.getOrCreate(
@@ -356,7 +377,16 @@ aiRoutes.post(
       c,
       systemPrompt,
       maxBudgetUsd,
+      allowedTools,
     );
+
+    console.log('[AI] Streaming session ready', {
+      sessionId,
+      orgId: dbSession.orgId,
+      provider,
+      providerModel,
+      activeState: activeSession.state,
+    });
 
     // Concurrent message guard — atomic check-and-set
     if (!streamingSessionManager.tryTransitionToProcessing(activeSession)) {
@@ -396,17 +426,21 @@ aiRoutes.post(
       }
     }
 
-    // Push message to the streaming input and start turn timeout
+    const subscriptionId = crypto.randomUUID();
+    const events = activeSession.eventBus.subscribe(subscriptionId);
+
+    // Push message only after subscribing so fast failures are not lost
     activeSession.inputController.pushMessage(sanitizedContent);
     streamingSessionManager.startTurnTimeout(activeSession);
 
-    const subscriptionId = crypto.randomUUID();
-
     return streamSSE(c, async (stream) => {
-      const events = activeSession.eventBus.subscribe(subscriptionId);
-
       try {
         for await (const event of events) {
+          console.log('[AI] Writing SSE event', {
+            sessionId,
+            subscriptionId,
+            eventType: event.type,
+          });
           await stream.writeSSE({
             event: event.type,
             data: JSON.stringify(event),
@@ -423,6 +457,10 @@ aiRoutes.post(
           }),
         });
       } finally {
+        console.log('[AI] Closing SSE subscription', {
+          sessionId,
+          subscriptionId,
+        });
         activeSession.eventBus.unsubscribe(subscriptionId);
       }
     });
@@ -738,7 +776,7 @@ aiRoutes.put(
       .values({
         partnerId,
         provider,
-        enabled: body.enabled ?? true,
+        enabled: body.enabled ?? false,
         defaultModel: body.defaultModel,
         allowedModels: body.allowedModels ?? null,
         endpoint: body.endpoint ?? null,
@@ -748,7 +786,7 @@ aiRoutes.put(
       .onConflictDoUpdate({
         target: [aiProviderConfigs.partnerId, aiProviderConfigs.provider],
         set: {
-          enabled: body.enabled ?? true,
+          enabled: body.enabled ?? false,
           defaultModel: body.defaultModel,
           allowedModels: body.allowedModels ?? null,
           endpoint: body.endpoint ?? null,
@@ -757,6 +795,16 @@ aiRoutes.put(
           updatedAt: new Date(),
         },
       });
+
+    if (body.enabled) {
+      await db
+        .update(aiProviderConfigs)
+        .set({
+          enabled: false,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(aiProviderConfigs.partnerId, partnerId), ne(aiProviderConfigs.provider, provider)));
+    }
 
     writeRouteAudit(c, {
       orgId: null,

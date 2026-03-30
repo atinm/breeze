@@ -29,6 +29,7 @@ import {
   ScrollText,
   Download,
   ClipboardCheck,
+  Bot,
   ScanSearch,
   Usb,
   MessagesSquare,
@@ -38,7 +39,8 @@ import {
 import { cn } from '@/lib/utils';
 import { useUiStore } from '../../stores/uiStore';
 import { useAuthStore } from '../../stores/auth';
-import { isSystemScopeToken } from '../../lib/authScope';
+import { getAuthScopeFromToken, isSystemScopeToken } from '../../lib/authScope';
+import { useOrgStore } from '../../stores/orgStore';
 
 interface SidebarProps {
   currentPath?: string;
@@ -77,6 +79,8 @@ type NavItem = {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   systemOnly?: boolean;
+  requirePartnerContext?: boolean;
+  partnerOrSystemOnly?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -154,18 +158,31 @@ const navSections: NavSection[] = [
     id: 'settings',
     label: 'Settings',
     icon: Building,
-    items: [
-      { name: 'Org Settings', href: '/settings/organization', icon: Building },
-      { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
-      { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
-      { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
-      { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
-      { name: 'Users', href: '/settings/users', icon: Users },
-      { name: 'Roles', href: '/settings/roles', icon: KeyRound },
-      { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
-      { name: 'Admin Partners', href: '/admin/partners', icon: ShieldCheck, systemOnly: true },
-    ],
+    items: [],
   },
+];
+
+const systemSettingsItems: NavItem[] = [
+  { name: 'Partners', href: '/admin/partners', icon: ShieldCheck, systemOnly: true },
+  { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
+  { name: 'Users', href: '/settings/users', icon: Users },
+  { name: 'Roles', href: '/settings/roles', icon: KeyRound },
+  { name: 'AI Providers', href: '/settings/ai-providers', icon: Bot, requirePartnerContext: true },
+  { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
+  { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
+  { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
+];
+
+const tenantSettingsItems: NavItem[] = [
+  { name: 'Organizations', href: '/settings/organizations', icon: Building2 },
+  { name: 'Users', href: '/settings/users', icon: Users },
+  { name: 'Roles', href: '/settings/roles', icon: KeyRound },
+  { name: 'AI Providers', href: '/settings/ai-providers', icon: Bot, partnerOrSystemOnly: true, requirePartnerContext: true },
+  { name: 'AI Usage & Budget', href: '/settings/ai-usage', icon: BrainCircuit },
+  { name: 'Custom Fields', href: '/settings/custom-fields', icon: ListChecks },
+  { name: 'Saved Filters', href: '/settings/filters', icon: Filter },
+  { name: 'Enrollment Keys', href: '/settings/enrollment-keys', icon: Key },
 ];
 
 // ---------------------------------------------------------------------------
@@ -213,7 +230,9 @@ function sectionForHref(href: string): string | null {
 // ---------------------------------------------------------------------------
 export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps) {
   const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
   const isSystemAdmin = isSystemScopeToken(accessToken);
+  const currentPartnerId = useOrgStore((state) => state.currentPartnerId);
   const [mode, setMode] = useState<SidebarMode>(readSavedMode);
   const [hovered, setHovered] = useState(false);
   const livePath = useSyncExternalStore(subscribeToPath, getPathSnapshot, getServerSnapshot);
@@ -284,10 +303,18 @@ export default function Sidebar({ currentPath: initialPath = '/' }: SidebarProps
       navSections
         .map((section) => ({
           ...section,
-          items: section.items.filter((item) => !item.systemOnly || isSystemAdmin),
+          items: (section.id === 'settings'
+            ? (isSystemAdmin ? systemSettingsItems : tenantSettingsItems)
+            : section.items
+          ).filter((item) => {
+            if (item.systemOnly && !isSystemAdmin) return false;
+            if (item.partnerOrSystemOnly && authScope !== 'partner' && authScope !== 'system') return false;
+            if (item.requirePartnerContext && authScope === 'system' && !currentPartnerId) return false;
+            return true;
+          }),
         }))
         .filter((section) => section.items.length > 0),
-    [isSystemAdmin],
+    [authScope, currentPartnerId, isSystemAdmin],
   );
   const visibleAllNavItems = useMemo(
     () => [

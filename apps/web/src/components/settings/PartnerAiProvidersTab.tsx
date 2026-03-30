@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Loader2, Save, Trash2 } from 'lucide-react';
 import { fetchWithAuth } from '../../stores/auth';
+import { useAiStore } from '../../stores/aiStore';
 import { showToast } from '../shared/Toast';
 
-type ProviderId = 'claude' | 'openai' | 'gemini' | 'copilot' | 'local';
+type ProviderId = 'claude' | 'openai' | 'gemini' | 'copilot' | 'local' | 'ollama';
 
 type ProviderConfig = {
   provider: ProviderId;
@@ -41,6 +42,7 @@ const PROVIDERS: Array<{ id: ProviderId; label: string; modelPlaceholder: string
   { id: 'gemini', label: 'Gemini', modelPlaceholder: 'gemini-2.5-pro' },
   { id: 'copilot', label: 'Copilot', modelPlaceholder: 'gpt-4.1' },
   { id: 'local', label: 'Local LLM', modelPlaceholder: 'llama3.1' },
+  { id: 'ollama', label: 'Ollama', modelPlaceholder: 'qwen3:8b' },
 ];
 
 function parseAllowedModels(text: string): string[] | null {
@@ -53,7 +55,7 @@ function parseAllowedModels(text: string): string[] | null {
 
 function normalizeForm(config?: ProviderConfig): ProviderFormState {
   return {
-    enabled: config?.enabled ?? true,
+    enabled: config?.enabled ?? false,
     defaultModel: config?.defaultModel ?? '',
     allowedModelsText: (config?.allowedModels ?? []).join(', '),
     endpoint: config?.endpoint ?? '',
@@ -90,9 +92,24 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
     gemini: normalizeForm(),
     copilot: normalizeForm(),
     local: normalizeForm(),
+    ollama: normalizeForm(),
   }));
 
   const hasPartnerId = useMemo(() => Boolean(partnerId), [partnerId]);
+
+  const restartAiConversation = async (): Promise<boolean> => {
+    const state = useAiStore.getState();
+    const hadSession = Boolean(state.sessionId);
+    if (!hadSession) return false;
+
+    await state.closeSession();
+
+    if (state.isOpen) {
+      await useAiStore.getState().createSession();
+    }
+
+    return true;
+  };
 
   useEffect(() => {
     if (!hasPartnerId) return;
@@ -114,6 +131,7 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
           gemini: normalizeForm(rows.find((r) => r.provider === 'gemini')),
           copilot: normalizeForm(rows.find((r) => r.provider === 'copilot')),
           local: normalizeForm(rows.find((r) => r.provider === 'local')),
+          ollama: normalizeForm(rows.find((r) => r.provider === 'ollama')),
         };
         setForms(next);
       } catch (err) {
@@ -127,7 +145,17 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
   }, [hasPartnerId, partnerId]);
 
   const updateProvider = (provider: ProviderId, patch: Partial<ProviderFormState>) => {
-    setForms((prev) => ({ ...prev, [provider]: { ...prev[provider], ...patch } }));
+    setForms((prev) => {
+      const next = { ...prev, [provider]: { ...prev[provider], ...patch } };
+      if (patch.enabled) {
+        for (const providerId of Object.keys(next) as ProviderId[]) {
+          if (providerId !== provider) {
+            next[providerId] = { ...next[providerId], enabled: false };
+          }
+        }
+      }
+      return next;
+    });
   };
 
   const saveProvider = async (provider: ProviderId) => {
@@ -140,7 +168,7 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
     const localInputCost = parseOptionalNonNegativeNumber(form.localEstimatedInputCostPerMillionCents);
     const localOutputCost = parseOptionalNonNegativeNumber(form.localEstimatedOutputCostPerMillionCents);
     if (localInputCost === null || localOutputCost === null) {
-      setError('Local estimated cost fields must be non-negative numbers');
+      setError('Estimated cost fields must be non-negative numbers');
       return;
     }
 
@@ -165,7 +193,13 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || `Failed to save ${provider} provider config`);
       }
-      showToast({ type: 'success', message: `${provider} provider settings saved` });
+      const restarted = await restartAiConversation();
+      showToast({
+        type: 'success',
+        message: restarted
+          ? `${provider} provider settings saved. Started a new AI conversation for the updated provider settings.`
+          : `${provider} provider settings saved`,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to save ${provider} provider config`);
     } finally {
@@ -184,8 +218,14 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || `Failed to delete ${provider} provider config`);
       }
-      setForms((prev) => ({ ...prev, [provider]: normalizeForm({ provider, enabled: true, defaultModel: '', allowedModels: null, endpoint: null, apiKeyRef: null, apiKeySet: false }) }));
-      showToast({ type: 'success', message: `${provider} provider settings cleared` });
+      setForms((prev) => ({ ...prev, [provider]: normalizeForm({ provider, enabled: false, defaultModel: '', allowedModels: null, endpoint: null, apiKeyRef: null, apiKeySet: false }) }));
+      const restarted = await restartAiConversation();
+      showToast({
+        type: 'success',
+        message: restarted
+          ? `${provider} provider settings cleared. Started a new AI conversation for the updated provider settings.`
+          : `${provider} provider settings cleared`,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to delete ${provider} provider config`);
     } finally {
@@ -216,6 +256,9 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
 
       <p className="text-sm text-muted-foreground">
         Configure provider defaults at the partner level. Organizations inherit these provider settings.
+      </p>
+      <p className="text-sm text-muted-foreground">
+        Changing the enabled provider affects new AI conversations. Existing conversations continue using the provider they started with.
       </p>
 
       {PROVIDERS.map((provider) => {
@@ -289,10 +332,10 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
                   <p className="text-xs text-muted-foreground">A key is already stored. Leave blank to keep it.</p>
                 )}
               </div>
-              {provider.id === 'local' && (
+              {(provider.id === 'local' || provider.id === 'ollama') && (
                 <>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Local Input Cost / 1M Tokens (cents)</label>
+                    <label className="text-xs font-medium text-muted-foreground">Estimated Input Cost / 1M Tokens (cents)</label>
                     <input
                       value={form.localEstimatedInputCostPerMillionCents}
                       onChange={(e) => updateProvider(provider.id, { localEstimatedInputCostPerMillionCents: e.target.value })}
@@ -301,7 +344,7 @@ export default function PartnerAiProvidersTab({ partnerId }: Props) {
                     />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-muted-foreground">Local Output Cost / 1M Tokens (cents)</label>
+                    <label className="text-xs font-medium text-muted-foreground">Estimated Output Cost / 1M Tokens (cents)</label>
                     <input
                       value={form.localEstimatedOutputCostPerMillionCents}
                       onChange={(e) => updateProvider(provider.id, { localEstimatedOutputCostPerMillionCents: e.target.value })}

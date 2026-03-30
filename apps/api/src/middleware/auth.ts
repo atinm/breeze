@@ -374,6 +374,19 @@ export function requirePermission(resource: string, action: string) {
       throw new HTTPException(401, { message: 'Not authenticated' });
     }
 
+    if (auth.scope === 'system') {
+      const systemPerms: UserPermissions = {
+        permissions: [{ resource: '*', action: '*' }],
+        partnerId: null,
+        orgId: null,
+        roleId: 'system',
+        scope: 'system'
+      };
+      c.set('permissions', systemPerms);
+      await next();
+      return;
+    }
+
     const userPerms = await getUserPermissions(auth.user.id, {
       partnerId: auth.partnerId || undefined,
       orgId: auth.orgId || undefined

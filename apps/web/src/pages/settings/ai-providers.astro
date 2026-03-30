@@ -1,0 +1,13 @@
+---
+import DashboardLayout from '../../layouts/DashboardLayout.astro';
+import Breadcrumbs from '../../components/layout/Breadcrumbs';
+import AiProvidersSettingsPage from '../../components/settings/AiProvidersSettingsPage';
+---
+
+<DashboardLayout title="AI Providers">
+  <Breadcrumbs client:load items={[
+    { label: 'Settings', href: '/settings' },
+    { label: 'AI Providers' }
+  ]} />
+  <AiProvidersSettingsPage client:load />
+</DashboardLayout>

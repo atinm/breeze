@@ -728,7 +728,18 @@ export function createBreezeMcpServer(
         timeoutSeconds: z.number().int().min(5).max(900).optional(),
         maxCandidates: z.number().int().min(1).max(200).optional(),
       },
-      makeHandler('analyze_disk_usage', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('analyze_disk_usage', getAuth, onPreToolUse, onPostToolUse),
+      {
+        usageNotes: [
+          'Prefer a narrow path before scanning the whole disk. Good starting paths are Downloads and temp directories.',
+          'For Windows, common narrow paths include C:\\Users\\<username>\\Downloads, C:\\Windows\\Temp, and C:\\Users\\<username>\\AppData\\Local\\Temp.',
+          'For macOS, common narrow paths include /Users/<username>/Downloads, /Users/<username>/Library/Caches, /Users/<username>/Library/Logs, /tmp, and /private/var/tmp.',
+          'For Linux, common narrow paths include /home/<username>/Downloads, /home/<username>/.cache, /tmp, /var/tmp, /var/log, and application-specific cache directories.',
+          'If you need a username-specific path and do not know the username yet, call get_active_users first and then build the path with the real username.',
+          'Only do a full-root scan when the user explicitly wants a broad scan or a narrower path did not explain the disk usage.',
+          'If you need fresh data, set refresh=true. When using refresh=true, provide a path when possible to keep the scan fast.',
+        ],
+      }
     ),
 
     tool(
@@ -1245,7 +1256,14 @@ export function createBreezeMcpServer(
         variables: z.record(z.unknown()).optional(),
         context: z.record(z.unknown()).optional(),
       },
-      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse)
+      makeHandler('execute_playbook', getAuth, onPreToolUse, onPostToolUse),
+      {
+        usageNotes: [
+          'Prefer individual tools for diagnosis and single-step remediation. Use this tool only when the user explicitly wants to run a named playbook or a multi-step audited workflow.',
+          'Before calling this tool, resolve a real playbookId with list_playbooks and a real deviceId with query_devices if you do not already have both UUIDs.',
+          'Do not guess or invent playbookId, deviceId, or variables. If the target or playbook is ambiguous, ask a clarifying question or resolve the IDs first.',
+        ],
+      }
     ),
 
     tool(

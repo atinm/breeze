@@ -22,6 +22,8 @@ describe('ai store', () => {
     useAiStore.setState({
       isOpen: false,
       sessionId: null,
+      provider: null,
+      providerModel: null,
       messages: [],
       isStreaming: false,
       isLoading: false,
@@ -72,6 +74,12 @@ describe('ai store', () => {
 
     fetchWithAuthMock.mockResolvedValueOnce(
       makeResponse({
+        session: {
+          provider: 'gemini',
+          providerModel: 'gemini-2.5-pro',
+          flaggedAt: null,
+          flagReason: null,
+        },
         messages: [
           {
             id: 'm-1',
@@ -87,6 +95,8 @@ describe('ai store', () => {
 
     expect(fetchWithAuthMock).toHaveBeenCalledWith('/ai/sessions/session-1');
     expect(useAiStore.getState().sessionId).toBe('session-1');
+    expect(useAiStore.getState().provider).toBe('gemini');
+    expect(useAiStore.getState().providerModel).toBe('gemini-2.5-pro');
     expect(useAiStore.getState().showHistory).toBe(false);
     expect(useAiStore.getState().messages).toHaveLength(1);
     expect(useAiStore.getState().messages[0]?.createdAt).toBeInstanceOf(Date);
@@ -121,5 +131,36 @@ describe('ai store', () => {
     expect(useAiStore.getState().messages).toHaveLength(0);
     expect(useAiStore.getState().isStreaming).toBe(false);
     expect(useAiStore.getState().error).toContain('already being processed');
+  });
+
+  it('sendMessage processes a final SSE error chunk without a trailing newline', async () => {
+    useAiStore.setState({ sessionId: 'session-1' });
+
+    const ssePayload = `data: ${JSON.stringify({
+      type: 'error',
+      message: 'Quota exceeded for model: gemini-2.5-pro. Please retry in 39s.',
+    })}`;
+
+    fetchWithAuthMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(ssePayload));
+          controller.close();
+        },
+      }),
+    } as unknown as Response);
+
+    await useAiStore.getState().sendMessage('Hello');
+
+    expect(useAiStore.getState().messages).toHaveLength(1);
+    expect(useAiStore.getState().messages[0]).toMatchObject({
+      role: 'user',
+      content: 'Hello',
+    });
+    expect(useAiStore.getState().error).toBe(
+      'Gemini quota exceeded for gemini-2.5-pro. Check billing or choose a different Gemini model. Retry after 39s.'
+    );
   });
 });

@@ -19,6 +19,7 @@ import { getPagination, getDeviceWithOrgCheck } from './helpers';
 import { listDevicesSchema, updateDeviceSchema } from './schemas';
 import { writeRouteAudit } from '../../services/auditEvents';
 import { hashEnrollmentKey } from '../../services/enrollmentKeySecurity';
+import { getOrgEnrollmentSecret } from '../../services/orgEnrollmentSecret';
 import { sendCommandToAgent, isAgentConnected } from '../agentWs';
 import { CommandTypes } from '../../services/commandQueue';
 
@@ -42,6 +43,7 @@ coreRoutes.post(
   async (c) => {
     const auth = c.get('auth');
     const requestedOrgId = c.req.query('orgId');
+    const requestedSiteId = c.req.query('siteId');
 
     let orgId = auth.orgId ?? null;
 
@@ -63,15 +65,23 @@ coreRoutes.post(
       return c.json({ error: 'Organization ID required. Provide orgId query parameter.' }, 400);
     }
 
-    // Pick the first site in the org for the enrollment key
+    if ((auth.scope === 'system' || auth.scope === 'partner') && !requestedSiteId) {
+      return c.json({ error: 'Site ID required. Provide siteId query parameter.' }, 400);
+    }
+
+    // Use the requested site when provided; otherwise fall back to the first site in the org.
     const [site] = await db
       .select({ id: sites.id })
       .from(sites)
-      .where(eq(sites.orgId, orgId))
+      .where(
+        requestedSiteId
+          ? and(eq(sites.id, requestedSiteId), eq(sites.orgId, orgId))
+          : eq(sites.orgId, orgId)
+      )
       .limit(1);
 
     if (!site) {
-      return c.json({ error: 'No site found for this organization. Create a site first.' }, 400);
+      return c.json({ error: requestedSiteId ? 'Selected site not found for this organization.' : 'No site found for this organization. Create a site first.' }, 400);
     }
 
     const key = `enroll_${randomBytes(24).toString('hex')}`;
@@ -89,7 +99,7 @@ coreRoutes.post(
       createdBy: auth.user.id,
     });
 
-    const configuredSecret = process.env.AGENT_ENROLLMENT_SECRET;
+    const configuredSecret = await getOrgEnrollmentSecret(orgId);
     const secretRequired =
       (process.env.NODE_ENV ?? 'development') === 'production'
       && typeof configuredSecret === 'string'

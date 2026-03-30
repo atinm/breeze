@@ -6,7 +6,8 @@ import {
   CheckCircle2,
   Paintbrush,
   ScrollText,
-  Shield
+  Shield,
+  ShieldAlert
 } from 'lucide-react';
 import OrgBrandingEditor from './OrgBrandingEditor';
 import OrgDefaultsEditor from './OrgDefaultsEditor';
@@ -14,8 +15,9 @@ import OrgNotificationSettings from './OrgNotificationSettings';
 import OrgSecuritySettings from './OrgSecuritySettings';
 import OrgEventLogSettings from './OrgEventLogSettings';
 import { useOrgStore } from '../../stores/orgStore';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { navigateTo } from '@/lib/navigation';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 
 const tabs = [
   {
@@ -77,6 +79,7 @@ type OrgDetails = {
       policyDefaults?: Record<string, string>;
       deviceGroup?: string;
       alertThreshold?: string;
+      enrollmentSecret?: string;
       autoEnrollment?: {
         enabled: boolean;
         requireApproval: boolean;
@@ -149,8 +152,11 @@ export default function OrgSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
-  const { currentOrgId, organizations } = useOrgStore();
+  const accessToken = useAuthStore((state) => state.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
+  const { currentPartnerId, currentOrgId, organizations, partners } = useOrgStore();
   const currentOrg = organizations.find(org => org.id === currentOrgId);
+  const currentPartner = partners.find((partner) => partner.id === currentPartnerId) ?? null;
 
   const fetchOrgDetails = useCallback(async () => {
     if (!currentOrgId) {
@@ -389,6 +395,21 @@ export default function OrgSettingsPage() {
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
+      {authScope === 'system' && displayOrg ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+          <div className="flex items-start gap-3">
+            <ShieldAlert className="mt-0.5 h-4 w-4 flex-none" />
+            <div>
+              <p className="font-medium">System admin editing organization settings</p>
+              <p className="text-amber-800/90 dark:text-amber-200/90">
+                {currentPartner ? `Partner: ${currentPartner.name} • ` : ''}
+                Organization: {displayOrg.name}
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Organization settings</h1>

@@ -135,6 +135,34 @@ function baseToolName(toolName: string): string {
   return toolName.includes('__') ? toolName.split('__').pop()! : toolName;
 }
 
+function parseScriptAiSseChunk(
+  chunk: string,
+  set: Parameters<typeof processScriptStreamEvent>[1],
+  get: Parameters<typeof processScriptStreamEvent>[2],
+  currentAssistantId: string | null,
+  snapshotTaken: boolean,
+): { currentAssistantId: string | null; snapshotTaken: boolean } {
+  let nextState = { currentAssistantId, snapshotTaken };
+  if (!chunk.trim()) return nextState;
+
+  for (const rawLine of chunk.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr) continue;
+
+    try {
+      const event = JSON.parse(jsonStr) as AiStreamEvent;
+      nextState = processScriptStreamEvent(event, set, get, nextState.currentAssistantId, nextState.snapshotTaken);
+    } catch (parseErr) {
+      console.error('[ScriptAI] Failed to parse SSE event:', jsonStr.slice(0, 200), parseErr);
+    }
+  }
+
+  return nextState;
+}
+
 // ============================================
 // Store
 // ============================================
@@ -303,41 +331,41 @@ export const useScriptAiStore = create<ScriptAiState>()(
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
-
-          for (const line of lines) {
-            if (line.startsWith('data:')) {
-              const jsonStr = line.slice(5).trim();
-              if (!jsonStr) continue;
-
-              let event: AiStreamEvent;
-              try {
-                event = JSON.parse(jsonStr) as AiStreamEvent;
-                consecutiveParseFailures = 0;
-              } catch (parseErr) {
-                consecutiveParseFailures++;
-                console.error('[ScriptAI] Failed to parse SSE JSON:', jsonStr.slice(0, 200), parseErr);
-                if (consecutiveParseFailures >= 5) {
-                  set({ error: 'Stream became corrupted. Please try again.', isStreaming: false });
-                  reader.cancel().catch((e) => console.warn('[ScriptAI] Cancel failed:', e));
-                  return;
-                }
-                continue;
-              }
-
-              try {
-                const result = processScriptStreamEvent(
-                  event,
-                  set,
-                  get,
-                  currentAssistantId,
-                  snapshotTakenThisTurn,
-                );
-                currentAssistantId = result.currentAssistantId;
-                snapshotTakenThisTurn = result.snapshotTaken;
-              } catch (processErr) {
-                console.error('[ScriptAI] Error processing SSE event:', event.type, processErr);
-              }
+          try {
+            const result = parseScriptAiSseChunk(
+              lines.join('\n'),
+              set,
+              get,
+              currentAssistantId,
+              snapshotTakenThisTurn,
+            );
+            currentAssistantId = result.currentAssistantId;
+            snapshotTakenThisTurn = result.snapshotTaken;
+            consecutiveParseFailures = 0;
+          } catch (parseErr) {
+            consecutiveParseFailures++;
+            console.error('[ScriptAI] Failed to process SSE chunk:', parseErr);
+            if (consecutiveParseFailures >= 5) {
+              set({ error: 'Stream became corrupted. Please try again.', isStreaming: false });
+              reader.cancel().catch((e) => console.warn('[ScriptAI] Cancel failed:', e));
+              return;
             }
+          }
+        }
+
+        if (buffer.trim()) {
+          try {
+            const result = parseScriptAiSseChunk(
+              buffer,
+              set,
+              get,
+              currentAssistantId,
+              snapshotTakenThisTurn,
+            );
+            currentAssistantId = result.currentAssistantId;
+            snapshotTakenThisTurn = result.snapshotTaken;
+          } catch (parseErr) {
+            console.error('[ScriptAI] Failed to process final SSE chunk:', parseErr);
           }
         }
       } catch (err) {

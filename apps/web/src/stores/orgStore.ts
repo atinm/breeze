@@ -39,8 +39,8 @@ interface OrgState {
   error: string | null;
 
   // Actions
-  setPartner: (partnerId: string) => void;
-  setOrganization: (orgId: string) => void;
+  setPartner: (partnerId: string | null) => void;
+  setOrganization: (orgId: string | null) => void;
   setSite: (siteId: string | null) => void;
   fetchPartners: () => Promise<void>;
   fetchOrganizations: () => Promise<void>;
@@ -61,6 +61,17 @@ export const useOrgStore = create<OrgState>()(
       error: null,
 
       setPartner: (partnerId) => {
+        if (!partnerId) {
+          set({
+            currentPartnerId: null,
+            currentOrgId: null,
+            currentSiteId: null,
+            organizations: [],
+            sites: []
+          });
+          return;
+        }
+
         set({
           currentPartnerId: partnerId,
           currentOrgId: null,
@@ -73,6 +84,15 @@ export const useOrgStore = create<OrgState>()(
       },
 
       setOrganization: (orgId) => {
+        if (!orgId) {
+          set({
+            currentOrgId: null,
+            currentSiteId: null,
+            sites: []
+          });
+          return;
+        }
+
         set({
           currentOrgId: orgId,
           currentSiteId: null,
@@ -145,12 +165,10 @@ export const useOrgStore = create<OrgState>()(
             isLoading: false
           });
 
-          // Auto-select first organization if none selected or cached org no longer exists
+          // Preserve partner-level context until the user explicitly selects an organization.
           const { currentOrgId } = get();
           const cachedOrgExists = currentOrgId && organizations.some((o: Organization) => o.id === currentOrgId);
-          if ((!currentOrgId || !cachedOrgExists) && organizations.length > 0) {
-            get().setOrganization(organizations[0].id);
-          } else if (currentOrgId && !cachedOrgExists) {
+          if (currentOrgId && !cachedOrgExists) {
             set({ currentOrgId: null, currentSiteId: null, sites: [] });
           }
         } catch (error) {

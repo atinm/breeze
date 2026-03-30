@@ -7,7 +7,9 @@ import RoleManager, {
   DeleteRoleModal,
   RoleUsersModal
 } from './RoleManager';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
+import { useOrgStore } from '../../stores/orgStore';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 import { navigateTo } from '@/lib/navigation';
 
 type ModalMode = 'closed' | 'create' | 'edit' | 'clone' | 'delete' | 'users';
@@ -20,6 +22,9 @@ type RoleUser = {
 };
 
 export default function RolesPage() {
+  const accessToken = useAuthStore((s) => s.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
+  const { currentPartnerId, currentOrgId, partners, organizations } = useOrgStore();
   const [roles, setRoles] = useState<Role[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -30,11 +35,29 @@ export default function RolesPage() {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [inheritedPermissions, setInheritedPermissions] = useState<EffectivePermission[]>([]);
 
+  const contextQuery = useCallback((path: string) => {
+    if (authScope !== 'system') {
+      return path;
+    }
+
+    if (currentOrgId) {
+      const separator = path.includes('?') ? '&' : '?';
+      return `${path}${separator}orgId=${encodeURIComponent(currentOrgId)}`;
+    }
+
+    if (currentPartnerId) {
+      const separator = path.includes('?') ? '&' : '?';
+      return `${path}${separator}partnerId=${encodeURIComponent(currentPartnerId)}`;
+    }
+
+    return path;
+  }, [authScope, currentOrgId, currentPartnerId]);
+
   const fetchRoles = useCallback(async () => {
     try {
       setLoading(true);
       setError(undefined);
-      const response = await fetchWithAuth('/roles');
+      const response = await fetchWithAuth(contextQuery('/roles'));
       if (!response.ok) {
         if (response.status === 401) {
           void navigateTo('/login', { replace: true });
@@ -49,11 +72,11 @@ export default function RolesPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [contextQuery]);
 
   const fetchRoleWithPermissions = useCallback(async (roleId: string): Promise<Role | null> => {
     try {
-      const response = await fetchWithAuth(`/roles/${roleId}`);
+      const response = await fetchWithAuth(contextQuery(`/roles/${roleId}`));
       if (!response.ok) {
         throw new Error('Failed to fetch role details');
       }
@@ -62,12 +85,12 @@ export default function RolesPage() {
       setError(err instanceof Error ? err.message : 'An error occurred');
       return null;
     }
-  }, []);
+  }, [contextQuery]);
 
   const fetchRoleUsers = useCallback(async (roleId: string) => {
     try {
       setLoadingUsers(true);
-      const response = await fetchWithAuth(`/roles/${roleId}/users`);
+      const response = await fetchWithAuth(contextQuery(`/roles/${roleId}/users`));
       if (!response.ok) {
         throw new Error('Failed to fetch role users');
       }
@@ -79,11 +102,11 @@ export default function RolesPage() {
     } finally {
       setLoadingUsers(false);
     }
-  }, []);
+  }, [contextQuery]);
 
   const fetchEffectivePermissions = useCallback(async (roleId: string): Promise<EffectivePermission[]> => {
     try {
-      const response = await fetchWithAuth(`/roles/${roleId}/effective-permissions`);
+      const response = await fetchWithAuth(contextQuery(`/roles/${roleId}/effective-permissions`));
       if (!response.ok) {
         return [];
       }
@@ -92,7 +115,7 @@ export default function RolesPage() {
     } catch {
       return [];
     }
-  }, []);
+  }, [contextQuery]);
 
   // Compute available parent roles (system roles + custom roles, excluding descendants of selected role)
   const getAvailableParentRoles = useCallback(() => {
@@ -168,7 +191,7 @@ export default function RolesPage() {
   }) => {
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth('/roles', {
+      const response = await fetchWithAuth(contextQuery('/roles'), {
         method: 'POST',
         body: JSON.stringify(data)
       });
@@ -197,7 +220,7 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
+      const response = await fetchWithAuth(contextQuery(`/roles/${selectedRole.id}`), {
         method: 'PATCH',
         body: JSON.stringify(data)
       });
@@ -226,7 +249,7 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}/clone`, {
+      const response = await fetchWithAuth(contextQuery(`/roles/${selectedRole.id}/clone`), {
         method: 'POST',
         body: JSON.stringify({ name: data.name })
       });
@@ -253,7 +276,7 @@ export default function RolesPage() {
 
       if (permissionsChanged || data.description !== selectedRole.description || parentRoleChanged) {
         // Update the cloned role with modified permissions/description/parentRoleId
-        await fetchWithAuth(`/roles/${clonedRole.id}`, {
+        await fetchWithAuth(contextQuery(`/roles/${clonedRole.id}`), {
           method: 'PATCH',
           body: JSON.stringify({
             description: data.description,
@@ -277,7 +300,7 @@ export default function RolesPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetchWithAuth(`/roles/${selectedRole.id}`, {
+      const response = await fetchWithAuth(contextQuery(`/roles/${selectedRole.id}`), {
         method: 'DELETE'
       });
 
@@ -321,6 +344,14 @@ export default function RolesPage() {
     );
   }
 
+  const currentPartner = partners.find((partner) => partner.id === currentPartnerId) ?? null;
+  const currentOrg = organizations.find((org) => org.id === currentOrgId) ?? null;
+  const systemContextLabel = currentOrg
+    ? `Viewing organization roles for ${currentOrg.name}`
+    : currentPartner
+      ? `Viewing partner roles for ${currentPartner.name}`
+      : 'Viewing system roles';
+
   return (
     <div className="space-y-6">
       <div>
@@ -329,6 +360,12 @@ export default function RolesPage() {
           Manage user roles and permissions. System roles cannot be modified.
         </p>
       </div>
+
+      {authScope === 'system' ? (
+        <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          {systemContextLabel}
+        </div>
+      ) : null}
 
       {error && (
         <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

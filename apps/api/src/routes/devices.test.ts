@@ -101,6 +101,7 @@ describe('device routes', () => {
   let app: Hono;
 
   beforeEach(() => {
+    vi.unstubAllEnvs();
     // resetAllMocks clears mockReturnValueOnce queues, preventing test pollution
     vi.resetAllMocks();
     // Restore factory default chains
@@ -202,7 +203,7 @@ describe('device routes', () => {
         values: vi.fn().mockResolvedValue(undefined)
       } as any);
 
-      const res = await app.request('/devices/onboarding-token?orgId=org-2', {
+      const res = await app.request('/devices/onboarding-token?orgId=org-2&siteId=site-1', {
         method: 'POST',
         headers: { Authorization: 'Bearer token' }
       });
@@ -211,6 +212,70 @@ describe('device routes', () => {
       const body = await res.json();
       expect(body.token).toContain('enroll_');
       expect(vi.mocked(db.insert)).toHaveBeenCalled();
+    });
+
+    it('should require siteId for partner/system contexts', async () => {
+      const { authMiddleware } = await import('../middleware/auth');
+      vi.mocked(authMiddleware).mockImplementation((c: any, next: any) => {
+        c.set('auth', {
+          user: { id: 'user-123', email: 'test@example.com', name: 'Test User' },
+          scope: 'partner',
+          orgId: null,
+          partnerId: 'partner-1',
+          accessibleOrgIds: ['org-1'],
+          canAccessOrg: (orgId: string) => orgId === 'org-1',
+          orgCondition: vi.fn()
+        });
+        return next();
+      });
+
+      const res = await app.request('/devices/onboarding-token?orgId=org-1', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Site ID required');
+    });
+
+    it('should return the organization enrollment secret when configured', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('AGENT_ENROLLMENT_SECRET', '');
+
+      vi.mocked(db.select)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: 'site-1' }])
+            })
+          })
+        } as any)
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{
+                settings: {
+                  defaults: {
+                    enrollmentSecret: 'org-secret-123'
+                  }
+                }
+              }])
+            })
+          })
+        } as any);
+      vi.mocked(db.insert).mockReturnValueOnce({
+        values: vi.fn().mockResolvedValue(undefined)
+      } as any);
+
+      const res = await app.request('/devices/onboarding-token', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token' }
+      });
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.enrollmentSecret).toBe('org-secret-123');
     });
   });
 

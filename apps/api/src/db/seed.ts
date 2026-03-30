@@ -52,6 +52,12 @@ const DEFAULT_PERMISSIONS = [
 // Default system roles
 const SYSTEM_ROLES = [
   {
+    name: 'System Admin',
+    scope: 'system' as const,
+    description: 'Full access across all partners and organizations',
+    permissions: ['*:*']
+  },
+  {
     name: 'Partner Admin',
     scope: 'partner' as const,
     description: 'Full access to partner and all organizations',
@@ -897,12 +903,49 @@ export async function seedDefaultAdmin() {
   console.log('  \u26A0\uFE0F  Change this password immediately after first login!');
 }
 
+export async function seedDefaultSystemAdmin() {
+  console.log('Seeding default system admin user...');
+
+  const adminEmail = 'sysadmin@breeze.local';
+  const adminPassword = 'BreezeSystem123!';
+
+  const [existingUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, adminEmail))
+    .limit(1);
+
+  if (existingUser) {
+    console.log('  System admin user already exists, skipping.');
+    return;
+  }
+
+  const passwordHash = await hashPassword(adminPassword);
+
+  await db
+    .insert(users)
+    .values({
+      email: adminEmail,
+      name: 'Breeze System Admin',
+      passwordHash,
+      status: 'active',
+      setupCompletedAt: new Date(),
+    });
+
+  console.log('');
+  console.log('Default system admin created:');
+  console.log('  Email: sysadmin@breeze.local');
+  console.log('  Password: BreezeSystem123!');
+  console.log('  \u26A0\uFE0F  Change this password immediately after first login!');
+}
+
 export async function seed() {
   await seedPermissions();
   await seedRoles();
   await seedScripts();
   await seedEventLogAlertTemplates();
   await seedDefaultAdmin();
+  await seedDefaultSystemAdmin();
   console.log('Database seeding complete.');
 }
 

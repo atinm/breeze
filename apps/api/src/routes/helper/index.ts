@@ -25,6 +25,7 @@ import { getRedis, rateLimiter } from '../../services';
 import { createSessionPreToolUse, createSessionPostToolUse } from '../../services/aiAgentSdk';
 import type { AuthContext } from '../../middleware/auth';
 import type { ActiveSession } from '../../services/streamingSessionManager';
+import type { AiProviderId } from '@breeze/shared/types/ai';
 
 const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const HELPER_RATE_LIMIT = 30;
@@ -346,7 +347,7 @@ helperRoutes.post(
       sessionId,
       {
         orgId: dbSession.orgId,
-        provider: (dbSession.provider as 'claude' | 'openai' | 'gemini' | 'copilot' | 'local') ?? 'claude',
+        provider: (dbSession.provider as AiProviderId) ?? 'claude',
         providerModel: dbSession.providerModel ?? dbSession.model,
         sdkSessionId: dbSession.sdkSessionId,
         model: dbSession.model,

@@ -8,11 +8,12 @@ import DeviceCard from './DeviceCard';
 import ScriptPickerModal, { type Script, type ScriptRunAsSelection } from './ScriptPickerModal';
 import DeviceSettingsModal from './DeviceSettingsModal';
 import { DeviceFilterBar } from '../filters/DeviceFilterBar';
-import { fetchWithAuth } from '../../stores/auth';
+import { fetchWithAuth, useAuthStore } from '../../stores/auth';
 import { sendDeviceCommand, sendBulkCommand, executeScript, toggleMaintenanceMode, decommissionDevice, bulkDecommissionDevices, restoreDevice, permanentDeleteDevice } from '../../services/deviceActions';
 import { navigateTo } from '@/lib/navigation';
 import { getErrorMessage, getErrorTitle } from '@/lib/errorMessages';
 import ProgressBar from '../shared/ProgressBar';
+import { getAuthScopeFromToken } from '../../lib/authScope';
 
 type ViewMode = 'list' | 'grid';
 
@@ -24,6 +25,7 @@ type Org = {
 type Site = {
   id: string;
   name: string;
+  orgId?: string;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -42,6 +44,8 @@ function toPercent(value: unknown): number {
 }
 
 export default function DevicesPage() {
+  const accessToken = useAuthStore((s) => s.tokens?.accessToken);
+  const authScope = getAuthScopeFromToken(accessToken);
   const [devices, setDevices] = useState<Device[]>([]);
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
@@ -51,6 +55,8 @@ export default function DevicesPage() {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [selectedOnboardingOrgId, setSelectedOnboardingOrgId] = useState<string>('');
+  const [selectedOnboardingSiteId, setSelectedOnboardingSiteId] = useState<string>('');
   const [onboardingToken, setOnboardingToken] = useState<string>('');
   const [enrollmentSecret, setEnrollmentSecret] = useState<string>('');
   const [tokenLoading, setTokenLoading] = useState(false);
@@ -160,15 +166,103 @@ export default function DevicesPage() {
     fetchDevices();
   }, [fetchDevices]);
 
+  const onboardingSites = useMemo(() => {
+    if (!selectedOnboardingOrgId) {
+      return [];
+    }
+    return sites.filter((site) => site.orgId === selectedOnboardingOrgId);
+  }, [sites, selectedOnboardingOrgId]);
+
   const handleOpenOnboarding = async () => {
     setShowOnboarding(true);
+    setSelectedOnboardingOrgId('');
+    setSelectedOnboardingSiteId('');
     setTokenLoading(true);
     setOnboardingToken('');
     setEnrollmentSecret('');
     setTokenError(undefined);
 
     try {
-      const response = await fetchWithAuth('/devices/onboarding-token', {
+      let onboardingUrl = '/devices/onboarding-token';
+      if (authScope !== 'organization') {
+        setTokenLoading(false);
+        return;
+      }
+
+      if (selectedOnboardingSiteId) {
+        onboardingUrl += `?siteId=${encodeURIComponent(selectedOnboardingSiteId)}`;
+      }
+
+      const response = await fetchWithAuth(onboardingUrl, {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          void navigateTo('/login', { replace: true });
+          return;
+        }
+        let errorMessage = 'Failed to generate installation token';
+        try {
+          const errorData = await response.json();
+          const rawMessage = errorData.message || errorData.error || '';
+          if (response.status === 403 && rawMessage.toLowerCase().includes('mfa required')) {
+            errorMessage = 'MFA_REQUIRED';
+          } else {
+            errorMessage = rawMessage || errorMessage;
+          }
+        } catch {
+          if (response.status === 404) {
+            errorMessage = 'Token generation service not available. Please contact support.';
+          } else if (response.status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
+          }
+        }
+        setTokenError(errorMessage);
+        return;
+      }
+
+      const data = await response.json();
+      const token = data.token ?? data.onboardingToken ?? data.data?.token;
+      if (!token) {
+        setTokenError('Server returned empty token. Please try again.');
+        return;
+      }
+      setOnboardingToken(token);
+      if (data.enrollmentSecret) {
+        setEnrollmentSecret(data.enrollmentSecret);
+      }
+    } catch (err) {
+      setTokenError(err instanceof Error ? err.message : 'Network error. Please check your connection.');
+    } finally {
+      setTokenLoading(false);
+    }
+  };
+
+  const handleGenerateOnboardingToken = async () => {
+    setTokenLoading(true);
+    setOnboardingToken('');
+    setEnrollmentSecret('');
+    setTokenError(undefined);
+
+    try {
+      const params = new URLSearchParams();
+      if (authScope !== 'organization') {
+        if (!selectedOnboardingOrgId) {
+          setTokenError('Select an organization first.');
+          return;
+        }
+        if (!selectedOnboardingSiteId) {
+          setTokenError('Select a site first.');
+          return;
+        }
+        params.set('orgId', selectedOnboardingOrgId);
+        params.set('siteId', selectedOnboardingSiteId);
+      } else if (selectedOnboardingSiteId) {
+        params.set('siteId', selectedOnboardingSiteId);
+      }
+
+      const response = await fetchWithAuth(`/devices/onboarding-token${params.size > 0 ? `?${params.toString()}` : ''}`, {
         method: 'POST'
       });
 
@@ -603,8 +697,8 @@ export default function DevicesPage() {
               Get enrollment key
               <ArrowRight className="h-4 w-4" />
             </a>
-            <a href="https://docs.breezermm.com/getting-started" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
-              View setup guide
+            <a href="https://docs.breezermm.com/agents/installation/" target="_blank" rel="noopener" className="inline-flex items-center gap-1.5 rounded-md border px-4 py-2 text-sm font-medium text-foreground hover:bg-muted transition-colors">
+              View Device Installation guide
             </a>
           </div>
         </div>
@@ -650,6 +744,65 @@ export default function DevicesPage() {
             </p>
 
             <div className="space-y-6">
+              {authScope !== 'organization' ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Organization</label>
+                    <select
+                      value={selectedOnboardingOrgId}
+                      onChange={(event) => {
+                        setSelectedOnboardingOrgId(event.target.value);
+                        setSelectedOnboardingSiteId('');
+                        setOnboardingToken('');
+                        setEnrollmentSecret('');
+                        setTokenError(undefined);
+                      }}
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                      <option value="">Select organization</option>
+                      {orgs.map((org) => (
+                        <option key={org.id} value={org.id}>
+                          {org.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Site</label>
+                    <select
+                      value={selectedOnboardingSiteId}
+                      onChange={(event) => {
+                        setSelectedOnboardingSiteId(event.target.value);
+                        setOnboardingToken('');
+                        setEnrollmentSecret('');
+                        setTokenError(undefined);
+                      }}
+                      disabled={!selectedOnboardingOrgId}
+                      className="h-10 w-full rounded-md border bg-background px-3 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <option value="">{selectedOnboardingOrgId ? 'Select site' : 'Select organization first'}</option>
+                      {onboardingSites.map((site) => (
+                        <option key={site.id} value={site.id}>
+                          {site.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="md:col-span-2">
+                    <button
+                      type="button"
+                      onClick={handleGenerateOnboardingToken}
+                      disabled={tokenLoading || !selectedOnboardingOrgId || !selectedOnboardingSiteId}
+                      className="inline-flex h-10 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {tokenLoading ? 'Generating token...' : 'Generate installation token'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="rounded-lg border bg-muted/30 p-4">
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-medium">Installation Token</label>
